@@ -1,0 +1,49 @@
+---
+title: "TBT_DMSO_Final.Rmd"
+author: "Taylor"
+date: '2022-06-23'
+output: html_document
+---
+
+#1vs1 TBT DMSO
+This is the RMArkdown for my TBT vs DMSO data. I will be Running all of the samples together as well as subsetting by day 
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "~/Documents/Git/MSC_Bulk/RNA_seq_Data/TBT_results/")
+suppressPackageStartupMessages({
+  library(ComplexHeatmap)
+  library(pheatmap)
+  library(RColorBrewer)
+  library(DESeq2)
+  library(BSgenome.Hsapiens.UCSC.hg38)
+  library(tidyverse)
+  library(dbplyr)
+  library(annotables)
+  library(org.Hs.eg.db)
+  library(AnnotationDbi)
+  library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+  library(EnsDb.Hsapiens.v86)
+  library(EnhancedVolcano)
+})
+```
+```{r load variables}
+load("~/DESeq2_Variables_Preanalyzed.RData") #this will have all of the preanalyzed data
+```
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
