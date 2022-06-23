@@ -428,7 +428,7 @@ res_order_TBT_D3 <-res_TBT_D3_contrast_padj_0.05[order(res_TBT_D3_contrast_padj_
 dim(res_order_TBT_D3)#2782 6
 ## Save tables
 library(writexl)
-writexl::write_xlsx(res_order_TBT_D3,"~/Documents/Git/MSC_Bulk/RNA_seq_Data/TBT_results/res_order_TBT_D3.xlsx")
+writexl::write_xlsx(res_order_TBT_D3,"~/Documents/Git/TBT_Paper_RNA_Work/Results/res_sig_order_TBT_D3.xlsx")
 ```
 
 ###D7
@@ -525,7 +525,7 @@ res_order_TBT_D7 <-res_TBT_D7_contrast_padj_0.05[order(res_TBT_D7_contrast_padj_
 dim(res_order_TBT_D7)#6267 6
 ## Save tables
 library(writexl)
-writexl::write_xlsx(res_order_TBT_D7,"~/Documents/Git/MSC_Bulk/RNA_seq_Data/TBT_results/res_order_TBT_D7.xlsx")
+writexl::write_xlsx(res_order_TBT_D7,"~/Documents/Git/TBT_Paper_RNA_Work/Results/res_sig_order_TBT_D7.xlsx")
 ```
 
 ###D10
@@ -621,7 +621,7 @@ res_order_TBT_D10 <-res_TBT_D10_contrast_padj_0.05[order(res_TBT_D10_contrast_pa
 dim(res_order_TBT_D10)#4424 6
 ## Save tables
 library(writexl)
-writexl::write_xlsx(res_order_TBT_D10,"~/Documents/Git/MSC_Bulk/RNA_seq_Data/TBT_results/res_order_TBT_D10.xlsx")
+writexl::write_xlsx(res_order_TBT_D10,"~/Documents/Git/TBT_Paper_RNA_Work/Results/res_sig_order_TBT_D10.xlsx")
 ```
 
 ###D14
@@ -717,7 +717,7 @@ res_order_TBT_D14 <-res_TBT_D14_contrast_padj_0.05[order(res_TBT_D14_contrast_pa
 dim(res_order_TBT_D14)#4836 6
 ## Save tables
 library(writexl)
-writexl::write_xlsx(res_order_TBT_D14,"~/Documents/Git/MSC_Bulk/RNA_seq_Data/TBT_results/res_order_TBT_D14.xlsx")
+writexl::write_xlsx(res_order_TBT_D14,"~/Documents/Git/TBT_Paper_RNA_Work/Results/res_sig_order_TBT_D14.xlsx")
 ```
 
 

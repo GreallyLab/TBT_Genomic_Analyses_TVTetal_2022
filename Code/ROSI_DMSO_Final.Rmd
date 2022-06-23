@@ -1,0 +1,729 @@
+---
+title: "ROSI_DMSO_Final"
+author: "Taylor"
+date: '2022-06-23'
+output: html_document
+---
+
+#1vs1 ROSI DMSO
+This is the RMArkdown for my ROSI vs DMSO data. I will be Running all of the samples together as well as subsetting by day 
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "~/Documents/Git/MSC_Bulk/RNA_seq_Data/ROSI_results/")
+suppressPackageStartupMessages({
+  library(ComplexHeatmap)
+  library(pheatmap)
+  library(RColorBrewer)
+  library(DESeq2)
+  library(BSgenome.Hsapiens.UCSC.hg38)
+  library(tidyverse)
+  library(dbplyr)
+  library(annotables)
+  library(org.Hs.eg.db)
+  library(AnnotationDbi)
+  library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+  library(EnsDb.Hsapiens.v86)
+  library(EnhancedVolcano)
+})
+```
+```{r load variables}
+load("~/DESeq2_Variables_Preanalyzed.RData") #this will have all of the preanalyzed data
+```
+#Basic analysis
+This starts out with the basic analysis of all the sample for with the condition(ROSI,control) as the object that the program is comparing the samples with. 
+This has Three Main sections:
+1. Basic Analysis, for time and donciiton
+2. Basic Analysis without MSC control
+3. Day by day comparison
+These will help to show that the most variability between the Condition and control. So I will subset the data. 
+
+
+```{r, Basic Analysis  eval=FALSE}
+#BiocManager::install("DESeq2")
+suppressPackageStartupMessages(library("DESeq2"))
+head(cts_mat)
+head(coldata_norm)
+#Subsetting the data to only have the pertinent information
+cts_mat_ROSI<- cts_mat[,which(substr(colnames(cts_mat),2,2)=="R"|substr(colnames(cts_mat),2,2)=="D" | substr(colnames(cts_mat),1,2)=="AO")]
+
+
+coldata_ROSI <- coldata_norm[which(substr(rownames(coldata_norm),2,2)=="R"|substr(rownames(coldata_norm),2,2)=="D"|substr(rownames(coldata_norm),1,2)=="AO"),]
+dim(cts_mat_ROSI) #58037 30
+dim(coldata_ROSI) #31 5
+coldata_ROSI
+##Creating DDS object from the subset data                                  
+
+dds_ROSI_TC <- DESeqDataSetFromMatrix(countData = cts_mat_ROSI,
+                                                 colData = coldata_ROSI,
+                                                 design = ~ Time + condition
+                                                 )
+summary(dds_ROSI_TC)
+head(dds_ROSI_TC)   
+#####Adding features and metadata columns
+rownames(dds_ROSI_TC) <- substr(rownames(dds_ROSI_TC),1,15)
+featureData <- data.frame(ensgene= substr(rownames(cts_mat_ROSI),1,15))
+dim(featureData)
+featureData$symbol <- cts_1021$SYMBOL# Adding mcol symbol data
+mcols(dds_ROSI_TC) <- DataFrame(mcols(dds_ROSI_TC), featureData)
+mcols(dds_ROSI_TC)
+```
+
+## Filtering DDS Object
+
+```{r Filtering a dds object,eval=FALSE}
+keep <- rowSums(counts(dds_ROSI_TC)) >= 50 #25240 genes passed this low bar
+dds_ROSI_TC <- dds_ROSI_TC[keep,]
+dim(dds_ROSI_TC)
+```
+
+Setting factor levels. It can be useful to designate factor levels while
+formatting your dds object since it will influence the manner in which
+DESeq compares different groups within your data.
+
+You can specify levels either using factor()
+
+```{r Generating dds object, eval=FALSE}
+dds_ROSI_TC$condition <- factor(dds_ROSI_TC$condition, levels = c("control","ROSI"))
+dds_ROSI_TC$condition
+####Making things factors
+dds_ROSI_TC$Day <- factor(dds_ROSI_TC$Day)
+dds_ROSI_TC$Time <- factor(dds_ROSI_TC$Time)
+```
+##NORMALIZE: This is self-explanitory. This will normalize the data so
+that we aren't getting a lot of outliers.
+
+```{r normalize counts}
+# Determine the size factors to use for normalization
+dds_ROSI_TC<- estimateSizeFactors(dds_ROSI_TC)
+sizeFactors(dds_ROSI_TC)
+# Extract the normalized counts
+normalized_counts_ROSI <- counts(dds_ROSI_TC, normalized=T)
+head(normalized_counts_ROSI)
+```
+###VST vs rlog
+VST is much faster to compute and less sensitive to outliers than the rlog. rlog is better for smaller data sets with samples sizes below ~30. you can perform both VST and rlog if you are unsure and then compare the meanSdPlot  or PCAs to see which generates better data. 
+```{r correlation plot}
+suppressPackageStartupMessages(library(pheatmap))
+
+# Transform the normalized counts 
+vsd_ROSI_TC <- vst(dds_ROSI_TC,blind=T )
+
+# Extract the matrix of transformed counts
+vsd_mat_ROSI_TC <- assay(vsd_ROSI_TC)
+
+# Compute the correlation values between samples
+vsd_cor_ROSI_TC <- cor(vsd_mat_ROSI_TC) 
+
+# Plot the heatmap
+pheatmap(vsd_cor_ROSI_TC)
+```
+###PCA time
+```{r pca of all RNA-seq data}
+# Transform the normalized counts 
+#vsd_ROSI_TC <- vst(dds_ROSI_TC,blind=F)
+
+#determine what to dolor the data by 
+colData(vsd_ROSI_TC)
+# Plot the PCA of PC1 and PC2
+plotPCA(vsd_ROSI_TC, intgroup= "condition")
+```
+##Top variance
+```{r top Variance genes}
+library("genefilter")
+#Lets us thee variance tables to get the samples that had the biggest discrepancy for day 0 to day 14. Then create a heatmap to visualize the top genes that plat this role. We can use this to see which of the MSCs played a larger role in the definithion of MSCs by what genes 
+VarGenes_ROSI_TC <- head(order(rowVars(assay(vsd_ROSI_TC)),decreasing = TRUE),50)
+#Create a matrix of the top genes 
+VG_mat_SD_NE  <- assay(vsd_SD_NoExtra)[VarGenes_SD_NE,]
+head(vsd_ROSI_TC)
+colnames(vsd_ROSI_TC)
+VG_mat_SD_NE  <- VG_mat_SD_NE - rowMeans(VG_mat_SD_NE)
+anno <- as.data.frame(colData(vsd_ROSI_TC)[, c("condition","Time")])
+
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+library(EnsDb.Hsapiens.v86)
+edb <- EnsDb.Hsapiens.v86
+organism(edb)
+keytypes(edb)
+keys(edb,keytype = "GENEID")
+
+## Annotating significant table
+dim(VG_mat_SD_NE)#Significant results day 0 to day 14 ordered by padj values the data rames has dimisions of 13013 6 
+VG_mat_SD_NE_annoDbi <- data.frame(VG_mat_SD_NE)
+VG_mat_SD_NE_annoDbi$symbol<-                                                                                      mapIds(edb,keys=rownames(VG_mat_SD_NE_annoDbi),column="SYMBOL",keytype="GENEID",multiVals="first")
+dim(VG_mat_SD_NE_annoDbi) #13013 7 
+rownames(VG_mat_SD_NE) <- VG_mat_SD_NE_annoDbi$symbol
+pheatmap(VG_mat_SD_NE, annotation_col = anno)
+```
+##PCA varaition
+```{r}
+plotPCA(vsd_ROSI_TC, intgroup = c("condition","Time"))
+```
+#Results
+```{r Differential Expression calc, echo=FALSE, eval= FALSE}
+#We didn't need to remave any of the samples so the basic analyis will be the same by conditon
+
+DES_ROSI_TC <- DESeq(dds_ROSI_TC)
+res_ROSI_TC <- results(DES_ROSI_TC)
+head(res_ROSI_TC)
+mcols(res_ROSI_TC)
+```
+## Filtering results
+I am adding a specific contrast and alpha values to help remove some of the extra low hanging fruit.  
+```{r Differential Expression results}
+res_contr_ROSI_TC <- results(DES_ROSI_TC, contrast=c("condition","ROSI","control"),alpha = 0.05)
+head(res_contr_ROSI_TC)
+########Annotate significant genes#################
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+library(EnsDb.Hsapiens.v86)
+edb <- EnsDb.Hsapiens.v86
+organism(edb)
+keytypes(edb)
+#keys(edb,keytype = "GENEID")
+
+## Annotating analyzed results the data can be subset for analysis and significance later
+dim(res_contr_ROSI_TC)#25240 all data with analysis reulsts 
+res_contr_ROSI_TC_anno <- data.frame(res_contr_ROSI_TC)
+res_contr_ROSI_TC_anno$symbol<-                                                                                      mapIds(edb,keys=rownames(res_contr_ROSI_TC_anno),column="SYMBOL",keytype="GENEID",multiVals="first")
+dim(res_contr_ROSI_TC_anno) #25143 7 (just added a column for symbol)
+head(res_contr_ROSI_TC_anno)
+library(writexl)
+writexl::write_xlsx(res_contr_ROSI_TC_anno,"~/Documents/Git/TBT_Paper_RNA_Work/Results/res_contr_ROSI_TC_anno.xlsx")
+```
+##Subset significant results
+```{r Significant normalized counts and volcano plots}
+#All significant normalized counts table
+res_contr_ROSI_TC_padj_0.05 <- res_contr_ROSI_TC_anno[which(res_contr_ROSI_TC_anno$padj<0.05),]
+dim(res_contr_ROSI_TC_padj_0.05) #154 DEGs over all when MSCs included
+res_sig_order_ROSI_TC <-res_contr_ROSI_TC_padj_0.05[order(res_contr_ROSI_TC_padj_0.05$padj),]
+## Significant counts tale with normalized counts
+res_sig_normalized_counts_ROSI_TC <- assay(vsd_ROSI_TC)[substr(rownames(res_sig_order_ROSI_TC),1,15),] 
+head(res_sig_normalized_counts_ROSI_TC)
+
+
+###Subsetting for upa nddown regullatd
+##Significant in each wat tables
+res_ROSI_TC_sig_down <-res_contr_ROSI_TC_padj_0.05[which(res_contr_ROSI_TC_padj_0.05$log2FoldChange<0),] 
+dim(res_ROSI_TC_sig_down) #3764 genes
+res_ROSI_TC_sig_up <-res_contr_ROSI_TC_padj_0.05[which(res_contr_ROSI_TC_padj_0.05$log2FoldChange>0),]
+dim(res_ROSI_TC_sig_up) #4156 genes
+
+#Normalized counts table for up and down regulations
+res_sig_down_normalized_counts_ROSI_TC <- res_sig_normalized_counts_ROSI_TC[substr(rownames(res_ROSI_TC_sig_down),1,15),]
+res_sig_up_normalized_counts_ROSI_TC <- res_sig_normalized_counts_ROSI_TC[substr(rownames(res_ROSI_TC_sig_up),1,15),]
+
+##Save DEG tables for downstream analysis
+library(writexl)
+writexl::write_xlsx(res_sig_order_ROSI_TC,"~/Documents/Git/TBT_Paper_RNA_Work/Results/res_sig_order_ROSI_TC.xlsx")
+```
+#Case Control Removing MSC condition
+```{r, eval=FALSE}
+
+#BiocManager::install("DESeq2")
+suppressPackageStartupMessages(library("DESeq2"))
+
+#Subsetting the data to only have the pertinent information
+cts_mat_ROSI_No_MSC<- cts_mat[,which(substr(colnames(cts_mat),2,2)=="R"|substr(colnames(cts_mat),2,2)=="D")]
+
+coldata_ROSI_No_MSC <- coldata_norm[which(substr(rownames(coldata_norm),2,2)=="R"|substr(rownames(coldata_norm),2,2)=="D"),]
+dim(cts_mat_ROSI_No_MSC) #58037 27
+dim(coldata_ROSI_No_MSC) #27 5
+
+coldata_ROSI
+##Creating DDS object from the subset data                                  
+
+dds_ROSI_NoMSC <- DESeqDataSetFromMatrix(countData = cts_mat_ROSI_No_MSC,
+                                                 colData = coldata_ROSI_No_MSC,
+                                                 design = ~ Day + condition
+                                                 )
+
+summary(dds_ROSI_NoMSC)
+head(dds_ROSI_NoMSC)   
+#####Adding features and metadata columns
+rownames(dds_ROSI_NoMSC) <- substr(rownames(dds_ROSI_NoMSC),1,15)
+featureData <- data.frame(ensgene= substr(rownames(cts_mat_ROSI_No_MSC),1,15))
+dim(featureData)
+featureData$symbol <- cts_1021$SYMBOL# Adding mcol symbol data
+mcols(dds_ROSI_NoMSC) <- DataFrame(mcols(dds_ROSI_NoMSC), featureData)
+mcols(dds_ROSI_NoMSC)
+
+## Filtering DDS Object
+#######removing low count rows #########
+keep <- rowSums(counts(dds_ROSI_NoMSC)) >= 50 #24717 genes passed this low 
+dds_ROSI_NoMSC <- dds_ROSI_NoMSC[keep,]
+dim(dds_ROSI_NoMSC)#24717 27
+
+#######Factor creation ##############
+dds_ROSI_NoMSC$condition <- factor(dds_ROSI_NoMSC$condition, levels = c("control","ROSI"))
+dds_ROSI_NoMSC$condition
+dds_ROSI_NoMSC$Day
+```
+
+### NORMALIZE: This is self-explanitory. This will normalize the data so
+that we aren't getting a lot of outliers.
+```{r normalize }
+# Determine the size factors to use for normalization
+dds_ROSI_NoMSC<- estimateSizeFactors(dds_ROSI_NoMSC)
+sizeFactors(dds_ROSI_NoMSC)
+# Extract the normalized counts
+normalized_counts_ROSI_NoMSC <- counts(dds_ROSI_NoMSC, normalized=T)
+head(normalized_counts_ROSI_NoMSC)
+```
+### VST vs rlog
+VST is much faster ot compute and less sensitive to outliers than the rlog. rlog is better for smaller datasets with samples sizeds below ~30. you can perform both VST and rlog if you are unsure and then compare the meanSdPlot  or PCAs to see which generates better data. 
+```{r correlation heatmaps}
+# Transform the normalized counts 
+vsd_ROSI_NoMSC <- vst(dds_ROSI_NoMSC,blind=F)
+# Extract the matrix of transformed counts
+vsd_mat_ROSI_NoMSC <- assay(dds_ROSI_NoMSC)
+# Compute the correlation values between samples
+vsd_cor_ROSI_NoMSC <- cor(vsd_mat_ROSI_NoMSC) 
+
+# Plot the heatmap
+pheatmap(vsd_cor_ROSI_NoMSC)
+colData(vsd_ROSI_NoMSC)
+###Plot PCAs####
+plotPCA(vsd_ROSI_NoMSC, intgroup= "condition")
+plotPCA(vsd_ROSI_NoMSC, intgroup = c("Time","condition"))
+```
+#Results from DESEQ2Diff expression analysis
+```{r Run DESEQ DEG analysis and save data}
+### RUN DESEQ2 for diffferential expression############
+DES_ROSI_NoMSC <- DESeq(dds_ROSI_NoMSC)
+res_ROSI_NoMSC <- results(DES_ROSI_NoMSC)
+resultsNames(res_ROSI_NoMSC)
+head(res_ROSI_NoMSC)
+mcols(res_ROSI_NoMSC)
+#Increase Alpha threshold
+res_ROSI_NoMSC_contrast <- results(DES_ROSI_NoMSC, contrast=c("condition","ROSI","control"),alpha = 0.05)
+head(res_ROSI_NoMSC_contrast)
+
+########Annotate significant genes#################
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+library(EnsDb.Hsapiens.v86)
+edb <- EnsDb.Hsapiens.v86
+organism(edb)
+keytypes(edb)
+#keys(edb,keytype = "GENEID")
+
+## Annotating analyzed results the data can be subset for analysis and significance later
+dim(res_ROSI_NoMSC_contrast)#24643 6
+res_ROSI_NoMSC_contrast_anno <- data.frame(res_ROSI_NoMSC_contrast)
+res_ROSI_NoMSC_contrast_anno$symbol<-                                                                                      mapIds(edb,keys=rownames(res_ROSI_NoMSC_contrast_anno),column="SYMBOL",keytype="GENEID",multiVals="first")
+dim(res_ROSI_NoMSC_contrast_anno) #24643 7 (just added a column for symbol)
+head(res_ROSI_NoMSC_contrast_anno)
+## Save data
+library(writexl)
+writexl::write_xlsx(res_ROSI_NoMSC_contrast_anno,"~/Documents/Git/TBT_Paper_RNA_Work/Results/res_ROSI_NoMSC_contrast_anno.xlsx")
+#####Subsetting for significance######3
+res_ROSI_NoMSC_contrast_padj_0.05 <- res_ROSI_NoMSC_contrast_anno[which(res_ROSI_NoMSC_contrast_anno$padj<0.05),]
+
+
+#All significant normalized counts table
+res_order_ROSI_NoMSC <-res_ROSI_NoMSC_contrast_padj_0.05[order(res_ROSI_NoMSC_contrast_padj_0.05$padj),]
+
+res_sig_order_ROSIcontrNoMSC_padj_0.05 <- res_ROSI_NoMSC_contrast_padj_0.05[order(res_ROSI_NoMSC_contrast_padj_0.05$padj),]
+dim(res_order_ROSI_NoMSC)#114 gene Differentially expressed
+###Save Data table
+library(writexl)
+writexl::write_xlsx(res_order_ROSI_NoMSC,"~/Documents/Git/TBT_Paper_RNA_Work/Results/res_sig_order_ROSI_NoMSC.xlsx")
+```
+
+
+#ROSI Day vs Day comparisons
+This will be a simple analysis using the condition as the design element. 
+#D3 Analysis
+```{r ROSI Day 3 comparison}
+#BiocManager::install("DESeq2")
+suppressPackageStartupMessages(library("DESeq2"))
+
+#Subsetting the data to only have the pertinent information
+# cts_mat_ROSI<- cts_mat[,which(substr(colnames(cts_mat),2,2)=="T"|substr(colnames(cts_mat),2,2)=="D")]
+# rownames(cts_mat_ROSI) <- substr(rownames(cts_mat_ROSI),1,15)#Removing the .# on the gene names
+# coldata_ROSI <- coldata_norm[which(substr(rownames(coldata_norm),2,2)=="T"|substr(rownames(coldata_norm),2,2)=="D"),]
+# dim(cts_mat_ROSI) #58037 27
+colnames(cts_mat_ROSI_No_MSC)
+cts_mat_ROSI_D3 <- cts_mat_ROSI_No_MSC[,1:7]
+coldata_ROSI_D3 <- coldata_ROSI_No_MSC[1:7,]
+##Creating DDS object from the subset data                                  
+dds_ROSI_D3 <- DESeqDataSetFromMatrix(countData = cts_mat_ROSI_D3,
+                                                 colData = coldata_ROSI_D3,
+                                                 design = ~ condition                                               )
+
+summary(dds_ROSI_D3)
+head(dds_ROSI_D3)   
+###Adding meta data columns
+rownames(dds_ROSI_D3) <- substr(rownames(dds_ROSI_D3),1,15)
+featureData <- data.frame(gene=substr(rownames(cts_mat_ROSI_D3),1,15))
+mcols(dds_ROSI_D3) <- DataFrame(mcols(dds_ROSI_D3), featureData)
+mcols(dds_ROSI_D3)
+featureData$symbol <- cts_1021$SYMBOL# Adding mcol symbol data
+mcols(dds_ROSI_D3) <- DataFrame(mcols(dds_ROSI_D3), featureData)
+mcols(dds_ROSI_D3)
+###Removing low quality rows
+keep <- rowSums(counts(dds_ROSI_D3)) >= 50
+length(keep) #58037
+dds_ROSI_D3 <- dds_ROSI_D3[keep,]
+####Making things factors
+dds_ROSI_D3$condition <- factor(dds_ROSI_D3$condition, levels = c("control","ROSI"))
+dds_ROSI_D3$condition
+# Determine the size factors to use for normalization
+dds_ROSI_D3<- estimateSizeFactors(dds_ROSI_D3)
+sizeFactors(dds_ROSI_D3)
+# Extract the normalized counts
+normalized_counts_ROSI_D3 <- counts(dds_ROSI_D3, normalized=T)
+head(normalized_counts_ROSI_D3)
+
+# Transform the normalized counts 
+vsd_ROSI_D3 <- vst(dds_ROSI_D3,blind=F )
+
+# Extract the matrix of transformed counts
+vsd_mat_ROSI_D3 <- assay(dds_ROSI_D3)
+
+# Compute the correlation values between samples
+vsd_cor_ROSI_D3 <- cor(vsd_mat_ROSI_D3) 
+
+# Plot the heatmap
+pheatmap(vsd_cor_ROSI_D3)
+
+colData(vsd_ROSI_D3)
+###Plot PCAs####
+plotPCA(vsd_ROSI_D3, intgroup= "condition")
+
+plotPCA(vsd_ROSI_D3, intgroup = c("Time","condition"))
+
+DES_ROSI_D3 <- DESeq(dds_ROSI_D3)
+res_ROSI_D3 <- results(DES_ROSI_D3)
+resultsNames(res_ROSI_D3)
+head(res_ROSI_D3)
+mcols(res_ROSI_D3)
+#Increase Alpha threshold
+res_ROSI_D3_contrast <- results(DES_ROSI_D3, contrast=c("condition","ROSI","control"),alpha = 0.05)
+head(res_ROSI_D3_contrast)
+
+##Annnotate DEG analysis table
+suppressPackageStartupMessages(library(org.Hs.eg.db))
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+library(EnsDb.Hsapiens.v86)
+edb <- EnsDb.Hsapiens.v86
+organism(edb)
+keytypes(edb)
+###Annotate results table#####
+res_ROSI_D3_contrast_anno <- data.frame(res_ROSI_D3_contrast)
+res_ROSI_D3_contrast_anno$symbol <- mapIds(edb,keys=rownames(res_ROSI_D3_contrast_anno),column="SYMBOL",keytype="GENEID",multiVals="first")
+## Save data
+library(writexl)
+writexl::write_xlsx(res_ROSI_D3_contrast_anno,"~/Documents/Git/TBT_Paper_RNA_Work/Results/res_ROSI_D3_contrast_anno.xlsx")
+
+### Subsetting for padj data ####
+sum(res_ROSI_D3_contrast_anno$padj < 0.05, na.rm=TRUE) #387 lowering the Padjusted value removed some of the genes
+res_ROSI_D3_contrast_padj_0.05 <- res_ROSI_D3_contrast_anno[which(res_ROSI_D3_contrast_anno$padj<0.05),]
+
+
+#All significant normalized counts table
+res_order_ROSI_D3 <-res_ROSI_D3_contrast_padj_0.05[order(res_ROSI_D3_contrast_padj_0.05$padj),]
+
+dim(res_order_ROSI_D3)#387 7
+## Save tables
+library(writexl)
+writexl::write_xlsx(res_order_ROSI_D3,"~/Documents/Git/TBT_Paper_RNA_Work/Results/res_sig_order_ROSI_D3.xlsx")
+```
+
+###D7
+```{r Day 7 comparison}
+#BiocManager::install("DESeq2")
+suppressPackageStartupMessages(library("DESeq2"))
+
+#Subsetting the data to only have the pertinent information
+# cts_mat_ROSI<- cts_mat[,which(substr(colnames(cts_mat),2,2)=="R"|substr(colnames(cts_mat),2,2)=="D")]
+# rownames(cts_mat_ROSI) <- substr(rownames(cts_mat_ROSI),1,15)#Removing the .# on the gene names
+# coldata_ROSI <- coldata_norm[which(substr(rownames(coldata_norm),2,2)=="R"|substr(rownames(coldata_norm),2,2)=="D"),]
+colnames(cts_mat_ROSI_No_MSC) #58037 27
+# dim(coldata_ROSI) #27 4
+cts_mat_ROSI_D7 <- cts_mat_ROSI_No_MSC[,8:15]
+coldata_ROSI_D7 <- coldata_ROSI_No_MSC[8:15,]
+##Creating DDS object from the subset data     
+head(cts_mat_ROSI_D7)
+dds_ROSI_D7 <- DESeqDataSetFromMatrix(countData = cts_mat_ROSI_D7,
+                                                 colData = coldata_ROSI_D7,
+                                                 design = ~ condition                                               )
+summary(dds_ROSI_D7)
+head(dds_ROSI_D7)   
+###Adding meta data columns
+rownames(dds_ROSI_D7) <- substr(rownames(dds_ROSI_D7),1,15)
+featureData <- data.frame(gene=substr(rownames(cts_mat_ROSI_D7),1,15))
+mcols(dds_ROSI_D7) <- DataFrame(mcols(dds_ROSI_D7), featureData)
+mcols(dds_ROSI_D7)
+featureData$symbol <- cts_1021$SYMBOL# Adding mcol symbol data
+mcols(dds_ROSI_D7) <- DataFrame(mcols(dds_ROSI_D7), featureData)
+mcols(dds_ROSI_D7)
+###Removing low quality rows
+keep <- rowSums(counts(dds_ROSI_D7)) >= 50
+length(keep) #24448 
+dds_ROSI_D7 <- dds_ROSI_D7[keep,]
+####Making things factors
+dds_ROSI_D7$condition <- factor(dds_ROSI_D7$condition, levels = c("control","ROSI"))
+dds_ROSI_D7$condition
+# Determine the size factors to use for normalization
+dds_ROSI_D7<- estimateSizeFactors(dds_ROSI_D7)
+sizeFactors(dds_ROSI_D7)
+# Extract the normalized counts
+normalized_counts_ROSI_D7 <- counts(dds_ROSI_D7, normalized=T)
+head(normalized_counts_ROSI_D7)
+
+# Transform the normalized counts 
+vsd_ROSI_D7 <- vst(dds_ROSI_D7,blind=F )
+
+# Extract the matrix of transformed counts
+vsd_mat_ROSI_D7 <- assay(dds_ROSI_D7)
+
+# Compute the correlation values between samples
+vsd_cor_ROSI_D7 <- cor(vsd_mat_ROSI_D7) 
+
+# Plot the heatmap
+pheatmap(vsd_cor_ROSI_D7)
+
+colData(vsd_ROSI_D7)
+###Plot PCAs####
+plotPCA(vsd_ROSI_D7, intgroup= "condition")
+
+plotPCA(vsd_ROSI_D7, intgroup = c("Time","condition"))
+
+DES_ROSI_D7 <- DESeq(dds_ROSI_D7)
+res_ROSI_D7 <- results(DES_ROSI_D7)
+resultsNames(res_ROSI_D7)
+head(res_ROSI_D7)
+mcols(res_ROSI_D7)
+#Increase Alpha threshold
+res_ROSI_D7_contrast <- results(DES_ROSI_D7, contrast=c("condition","ROSI","control"),alpha = 0.05)
+head(res_ROSI_D7_contrast)
+
+##Annnotate DEG analysis table
+suppressPackageStartupMessages(library(org.Hs.eg.db))
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+library(EnsDb.Hsapiens.v86)
+edb <- EnsDb.Hsapiens.v86
+organism(edb)
+keytypes(edb)
+###Annotate results table#####
+res_ROSI_D7_contrast_anno <- data.frame(res_ROSI_D7_contrast)
+res_ROSI_D7_contrast_anno$symbol <- mapIds(edb,keys=rownames(res_ROSI_D7_contrast_anno),column="SYMBOL",keytype="GENEID",multiVals="first")
+## Save data
+library(writexl)
+writexl::write_xlsx(res_ROSI_D7_contrast_anno,"~/Documents/Git/TBT_Paper_RNA_Work/Results/res_ROSI_D7_contrast_anno.xlsx")
+
+### Subsetting for padj data ####
+sum(res_ROSI_D7_contrast_anno$padj < 0.05, na.rm=TRUE) #24 lowering the Padjusted value removed some of the genes
+res_ROSI_D7_contrast_padj_0.05 <- res_ROSI_D7_contrast_anno[which(res_ROSI_D7_contrast_anno$padj<0.05),]
+
+
+#All significant normalized counts table
+res_order_ROSI_D7 <-res_ROSI_D7_contrast_padj_0.05[order(res_ROSI_D7_contrast_padj_0.05$padj),]
+
+dim(res_order_ROSI_D7)#24 6
+## Save tables
+library(writexl)
+writexl::write_xlsx(res_order_ROSI_D7,"~/Documents/Git/TBT_Paper_RNA_Work/Results/res_sig_order_ROSI_D7.xlsx")
+```
+
+###D10
+```{r Day 10 comparison}
+#BiocManager::install("DESeq2")
+suppressPackageStartupMessages(library("DESeq2"))
+
+#Subsetting the data to only have the pertinent information
+# cts_mat_ROSI<- cts_mat[,which(substr(colnames(cts_mat),2,2)=="T"|substr(colnames(cts_mat),2,2)=="D")]
+# rownames(cts_mat_ROSI) <- substr(rownames(cts_mat_ROSI),1,15)#Removing the .# on the gene names
+# coldata_ROSI <- coldata_norm[which(substr(rownames(coldata_norm),2,2)=="T"|substr(rownames(coldata_norm),2,2)=="D"),]
+colnames(cts_mat_ROSI_No_MSC) #58037 27
+# dim(coldata_ROSI) #27 4
+cts_mat_ROSI_D10 <- cts_mat_ROSI_No_MSC[,16:21]
+coldata_ROSI_D10 <- coldata_ROSI_No_MSC[16:21,]
+##Creating DDS object from the subset data                                  
+dds_ROSI_D10 <- DESeqDataSetFromMatrix(countData = cts_mat_ROSI_D10,
+                                                 colData = coldata_ROSI_D10,
+                                                 design = ~ condition                                               )
+summary(dds_ROSI_D10)
+head(dds_ROSI_D10)   
+###Adding meta data columns
+rownames(dds_ROSI_D10) <- substr(rownames(dds_ROSI_D10),1,15)
+featureData <- data.frame(gene=substr(rownames(cts_mat_ROSI_D10),1,15))
+mcols(dds_ROSI_D10) <- DataFrame(mcols(dds_ROSI_D10), featureData)
+mcols(dds_ROSI_D10)
+featureData$symbol <- cts_1021$SYMBOL# Adding mcol symbol data
+mcols(dds_ROSI_D10) <- DataFrame(mcols(dds_ROSI_D10), featureData)
+mcols(dds_ROSI_D10)
+###Removing low quality rows
+keep <- rowSums(counts(dds_ROSI_D10)) >= 50
+length(keep) #58037
+dds_ROSI_D10 <- dds_ROSI_D10[keep,]
+####Making things factors
+dds_ROSI_D10$condition <- factor(dds_ROSI_D10$condition, levels = c("control","ROSI"))
+dds_ROSI_D10$condition
+# Determine the size factors to use for normalization
+dds_ROSI_D10<- estimateSizeFactors(dds_ROSI_D10)
+sizeFactors(dds_ROSI_D10)
+# Extract the normalized counts
+normalized_counts_ROSI_D10 <- counts(dds_ROSI_D10, normalized=T)
+head(normalized_counts_ROSI_D10)
+
+# Transform the normalized counts 
+vsd_ROSI_D10 <- vst(dds_ROSI_D10,blind=F )
+
+# Extract the matrix of transformed counts
+vsd_mat_ROSI_D10 <- assay(dds_ROSI_D10)
+
+# Compute the correlation values between samples
+vsd_cor_ROSI_D10 <- cor(vsd_mat_ROSI_D10) 
+
+# Plot the heatmap
+pheatmap(vsd_cor_ROSI_D10)
+
+colData(vsd_ROSI_D10)
+###Plot PCAs####
+plotPCA(vsd_ROSI_D10, intgroup= "condition")
+
+plotPCA(vsd_ROSI_D10, intgroup = c("Time","condition"))
+######Results DESEQ############
+DES_ROSI_D10 <- DESeq(dds_ROSI_D10)
+res_ROSI_D10 <- results(DES_ROSI_D10)
+resultsNames(res_ROSI_D10)
+head(res_ROSI_D10)
+mcols(res_ROSI_D10)
+#Increase Alpha threshold
+res_ROSI_D10_contrast <- results(DES_ROSI_D10, contrast=c("condition","ROSI","control"),alpha = 0.05)
+head(res_ROSI_D10_contrast)
+
+##Annnotate DEG analysis table
+suppressPackageStartupMessages(library(org.Hs.eg.db))
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+library(EnsDb.Hsapiens.v86)
+edb <- EnsDb.Hsapiens.v86
+organism(edb)
+keytypes(edb)
+###Annotate results table#####
+res_ROSI_D10_contrast_anno <- data.frame(res_ROSI_D10_contrast)
+res_ROSI_D10_contrast_anno$symbol <- mapIds(edb,keys=rownames(res_ROSI_D10_contrast_anno),column="SYMBOL",keytype="GENEID",multiVals="first")
+## Save data
+library(writexl)
+writexl::write_xlsx(res_ROSI_D10_contrast_anno,"~/Documents/Git/ROSI_Paper_RNA_Work/Results/res_ROSI_D10_contrast_anno.xlsx")
+
+### Subsetting for padj data ####
+sum(res_ROSI_D10_contrast_anno$padj < 0.05, na.rm=TRUE) #985 lowering the Padjusted value removed some of the genes
+res_ROSI_D10_contrast_padj_0.05 <- res_ROSI_D10_contrast_anno[which(res_ROSI_D10_contrast_anno$padj<0.05),]
+
+
+#All significant normalized counts table
+res_order_ROSI_D10 <-res_ROSI_D10_contrast_padj_0.05[order(res_ROSI_D10_contrast_padj_0.05$padj),]
+
+dim(res_order_ROSI_D10)#985 6
+## Save tables
+library(writexl)
+writexl::write_xlsx(res_order_ROSI_D10,"~/Documents/Git/TBT_Paper_RNA_Work/Results/res_sig_order_ROSI_D10.xlsx")
+```
+
+###D14
+```{r Day 14 comparison}
+#BiocManager::install("DESeq2")
+suppressPackageStartupMessages(library("DESeq2"))
+
+#Subsetting the data to only have the pertinent information
+# cts_mat_ROSI<- cts_mat[,which(substr(colnames(cts_mat),2,2)=="R"|substr(colnames(cts_mat),2,2)=="D")]
+# rownames(cts_mat_ROSI) <- substr(rownames(cts_mat_ROSI),1,15)#Removing the .# on the gene names
+# coldata_ROSI <- coldata_norm[which(substr(rownames(coldata_norm),2,2)=="R"|substr(rownames(coldata_norm),2,2)=="D"),]
+colnames(cts_mat_ROSI) #58037 27
+# dim(coldata_ROSI) #27 4
+cts_mat_ROSI_D14 <- cts_mat_ROSI_No_MSC[,22:27]
+coldata_ROSI_D14 <- coldata_ROSI_No_MSC[22:27,]
+##Creating DDS object from the subset data                                  
+dds_ROSI_D14 <- DESeqDataSetFromMatrix(countData = cts_mat_ROSI_D14,
+                                                 colData = coldata_ROSI_D14,
+                                                 design = ~ condition                                               )
+summary(dds_ROSI_D14)
+head(dds_ROSI_D14)   
+###Adding meta data columns
+rownames(dds_ROSI_D14) <- substr(rownames(dds_ROSI_D14),1,15)
+featureData <- data.frame(gene=substr(rownames(cts_mat_ROSI_D14),1,15))
+mcols(dds_ROSI_D14) <- DataFrame(mcols(dds_ROSI_D14), featureData)
+mcols(dds_ROSI_D14)
+featureData$symbol <- cts_1021$SYMBOL# Adding mcol symbol data
+mcols(dds_ROSI_D14) <- DataFrame(mcols(dds_ROSI_D14), featureData)
+mcols(dds_ROSI_D14)
+###Removing low quality rows
+keep <- rowSums(counts(dds_ROSI_D14)) >= 50
+length(keep) #24448 
+dds_ROSI_D14 <- dds_ROSI_D14[keep,]
+####Making things factors
+dds_ROSI_D14$condition <- factor(dds_ROSI_D14$condition, levels = c("control","ROSI"))
+dds_ROSI_D14$condition
+# Determine the size factors to use for normalization
+dds_ROSI_D14<- estimateSizeFactors(dds_ROSI_D14)
+sizeFactors(dds_ROSI_D14)
+# Extract the normalized counts
+normalized_counts_ROSI_D14 <- counts(dds_ROSI_D14, normalized=T)
+head(normalized_counts_ROSI_D14)
+
+# Transform the normalized counts 
+vsd_ROSI_D14 <- vst(dds_ROSI_D14,blind=F )
+
+# Extract the matrix of transformed counts
+vsd_mat_ROSI_D14 <- assay(dds_ROSI_D14)
+
+# Compute the correlation values between samples
+vsd_cor_ROSI_D14 <- cor(vsd_mat_ROSI_D14) 
+
+# Plot the heatmap
+pheatmap(vsd_cor_ROSI_D14)
+
+colData(vsd_ROSI_D14)
+###Plot PCAs####
+plotPCA(vsd_ROSI_D14, intgroup= "condition")
+
+plotPCA(vsd_ROSI_D14, intgroup = c("Time","condition"))
+
+DES_ROSI_D14 <- DESeq(dds_ROSI_D14)
+res_ROSI_D14 <- results(DES_ROSI_D14)
+resultsNames(res_ROSI_D14)
+head(res_ROSI_D14)
+mcols(res_ROSI_D14)
+#Increase Alpha threshold
+res_ROSI_D14_contrast <- results(DES_ROSI_D14, contrast=c("condition","ROSI","control"),alpha = 0.05)
+head(res_ROSI_D14_contrast)
+
+##Annnotate DEG analysis table
+suppressPackageStartupMessages(library(org.Hs.eg.db))
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+library(EnsDb.Hsapiens.v86)
+edb <- EnsDb.Hsapiens.v86
+organism(edb)
+keytypes(edb)
+###Annotate results table#####
+res_ROSI_D14_contrast_anno <- data.frame(res_ROSI_D14_contrast)
+res_ROSI_D14_contrast_anno$symbol <- mapIds(edb,keys=rownames(res_ROSI_D14_contrast_anno),column="SYMBOL",keytype="GENEID",multiVals="first")
+## Save data
+library(writexl)
+writexl::write_xlsx(res_ROSI_D14_contrast_anno,"~/Documents/Git/ROSI_Paper_RNA_Work/Results/res_ROSI_D14_contrast_anno.xlsx")
+
+### Subsetting for padj data ####
+sum(res_ROSI_D14_contrast_anno$padj < 0.05, na.rm=TRUE) #73 lowering the Padjusted value removed some of the genes
+res_ROSI_D14_contrast_padj_0.05 <- res_ROSI_D14_contrast_anno[which(res_ROSI_D14_contrast_anno$padj<0.05),]
+
+
+#All significant normalized counts table
+res_order_ROSI_D14 <-res_ROSI_D14_contrast_padj_0.05[order(res_ROSI_D14_contrast_padj_0.05$padj),]
+
+dim(res_order_ROSI_D14)#73 6
+## Save tables
+library(writexl)
+writexl::write_xlsx(res_order_ROSI_D14,"~/Documents/Git/TBT_Paper_RNA_Work/Results/res_order_ROSI_D14.xlsx")
+```
+
+
+```{r Subset data for significance}
+library(writexl)
+#writexl::write_xlsx(res_ROSI_contrNoMSC_anno,"~/Documents/Git/MSC_Bulk/RNA_seq_Data/ROSI_results/ROSI_noMSC_DEGs_NoMSC_sig_anno.xlsx")
+```
