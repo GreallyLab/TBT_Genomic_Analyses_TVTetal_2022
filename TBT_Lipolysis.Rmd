@@ -1,0 +1,719 @@
+---
+title: "TBT_noMSC_Lipolysis.Rmd"
+author: "Taylor"
+date: "5/5/2022"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "~/Documents/Git/MSC_Bulk/RNA_seq_Data/TBT_results/")
+suppressPackageStartupMessages({
+  library(ComplexHeatmap)
+  library(pheatmap)
+  library(RColorBrewer)
+  library(DESeq2)
+  library(BSgenome.Hsapiens.UCSC.hg38)
+  library(tidyverse)
+  library(dbplyr)
+  library(annotables)
+  library(org.Hs.eg.db)
+  library(AnnotationDbi)
+  library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+  library(EnsDb.Hsapiens.v86)
+  library(EnhancedVolcano)
+  library(enrichplot)
+  library(rrvgo)
+  library(matrixStats)
+  library(genefilter)
+  library(ggpubr)
+})
+load(file = "~/Documents/Git/MSC_Bulk/RNA_seq_Data/TBT_results/TBT_data_noMSC.Rdata")
+```
+# TBT No MSC
+
+This analysis is from all of the samples except the Day 0 samples.
+```{r NoMSC vs NoMSC visualizations of samples only results}
+
+# trying to run contrast on the contrasted data
+###Plot PCAs####
+plotPCA(vsd_TBT_NoMSC, intgroup= "condition")
+plotPCA(vsd_TBT_NoMSC, intgroup = c("Time","condition"))
+head(res_TBT_contrNoMSC_anno)
+```
+
+```{r top Variance genes}
+
+#Lets us thee variance tables to get the samples that had the biggest discrepencey for day 0 to day 14. Then crease a heatmap to visualize the top genes that plat this role. We can use this to see which of the MSC s playted a larger role in the definithion of MSCs by what genes 
+VarGenes_TBT_NoMSC <- head(order(rowVars(assay(vsd_TBT_NoMSC)),decreasing = TRUE),50)
+
+#Create a matrix of the top genes 
+VG_mat_TBT_NoMSC  <- assay(vsd_TBT_NoMSC)[VarGenes_TBT_NoMSC,]
+head(vsd_TBT_NoMSC)
+VG_mat_TBT_NoMSC  <- VG_mat_TBT_NoMSC - rowMeans(VG_mat_TBT_NoMSC)
+anno <- as.data.frame(colData(vsd_TBT_NoMSC)[, c("condition","Time")])
+
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+library(EnsDb.Hsapiens.v86)
+edb <- EnsDb.Hsapiens.v86
+# organism(edb)
+# keytypes(edb)
+#keys(edb,keytype = "GENEID")
+
+## Annotating significant table
+dim(VG_mat_TBT_NoMSC)#Significant results day 0 to day 14 ordered by padj values the data rames has dimisions of 13013 6 
+VG_mat_TBT_NoMSC_annoDbi <- data.frame(VG_mat_TBT_NoMSC)
+VG_mat_TBT_NoMSC_annoDbi$symbol<-                                  mapIds(edb,keys=rownames(VG_mat_TBT_NoMSC_annoDbi),column="SYMBOL",keytype="GENEID",multiVals="first")
+dim(VG_mat_TBT_NoMSC_annoDbi) #13013 7 
+rownames(VG_mat_TBT_NoMSC) <- VG_mat_TBT_NoMSC_annoDbi$symbol
+pheatmap(VG_mat_TBT_NoMSC, annotation_col = anno)
+```
+```{r subsetting}
+## Subsetting significant counts
+sum(res_TBT_contrNoMSC_anno$padj < 0.05, na.rm=TRUE) #7649
+res_TBT_contrNoMSC_anno_padj_0.05 <- res_TBT_contrNoMSC_anno[which(res_TBT_contrNoMSC_anno$padj<0.05),]
+###l2fc cutoff
+res_TBT_contrNoMSC_anno_padj_0.05_l2fc1 <- res_TBT_contrNoMSC_anno_padj_0.05[which(abs(res_TBT_contrNoMSC_anno_padj_0.05$log2FoldChange)>1),]
+dim(res_TBT_contrNoMSC_anno_padj_0.05_l2fc1)#895 7
+#Data to use: 
+#           res_TBT_anno(all results annotated with threshold cutoff)
+#normalized counts tables:
+#           vsd_mat_TBT(this is the normalized data)
+#           res_sig_normalized_counts_TBT(normalized data subset form the standard constrast)
+
+res_TBT_contrNoMSC_anno_padj_0.05_NC <- vsd_mat_TBT_NoMSC[rownames(res_TBT_contrNoMSC_anno_padj_0.05),]
+res_TBT_contrNoMSC_anno_padj_0.05_l2fc_NC <- vsd_mat_TBT_NoMSC[rownames(res_TBT_contrNoMSC_anno_padj_0.05_l2fc1),]
+####Make the normalized counts from day contrast#####
+head(res_TBT_contrNoMSC_anno_padj_0.05)
+head(res_TBT_contrNoMSC_anno_padj_0.05_NC)
+
+
+```
+
+```{r plots}
+
+#pheatmap(res_TBT_contrNoMSC_anno_padj_0.05_NC,
+#          cluster_rows =T,
+#          cluster_cols = F,
+#          show_rownames =F,
+#          annotation = select(coldata_TBT_No_MSC, condition, Day),
+#          scale = "row")
+
+
+####Volcano#######
+##Annnotate significant table
+suppressPackageStartupMessages(library(org.Hs.eg.db))
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+library(EnsDb.Hsapiens.v86)
+edb <- EnsDb.Hsapiens.v86
+organism(edb)
+keytypes(edb)
+#keys(edb,keytype = "GENEID")
+###Annotate results table#####
+res_TBT_NoMSC_contrast_anno <- data.frame(res_TBT_NoMSC_contrast)
+res_TBT_NoMSC_contrast_anno$symbol <- mapIds(edb,keys=rownames(res_TBT_NoMSC_contrast),column="SYMBOL",keytype="GENEID",multiVals="first")
+###Volcano Plot ######
+
+EnhancedVolcano(res_TBT_NoMSC_contrast_anno,
+    lab = res_TBT_NoMSC_contrast_anno$symbol,
+    x = 'log2FoldChange',
+    y = 'padj',
+    pCutoff = 5e-5,
+    FCcutoff = 1,
+    cutoffLineType = 'twodash',
+    cutoffLineWidth = 0.8,
+    pointSize = 1.5,
+    labSize = 4.0,
+    title = "results TBT vs DMSO contrast day noMSC",
+    colAlpha = 1,
+    legendLabels=c('Not sig.','Log (base 2) FC','p-value',
+      'p-value & Log (base 2) FC'),
+    legendPosition = 'left',
+    legendLabSize = 8,
+    legendIconSize = 4.0,
+    drawConnectors = F,
+    widthConnectors = 0.75,
+    max.overlaps = 50)
+###GO analysis####
+# library(clusterProfiler)
+# library(enrichplot)
+# library(org.Hs.eg.db)
+# library(ggplot2)
+# we use ggplot2 to add x axis labels (ex: ridgeplot)
+head(res_TBT_contrNoMSC_anno_padj_0.05)
+TBT_lfc_NoMSC <- res_TBT_contrNoMSC_anno_padj_0.05$log2FoldChange
+names(TBT_lfc_NoMSC) <- res_TBT_contrNoMSC_anno_padj_0.05$symbol
+TBT_lfc_NoMSC<-na.omit(TBT_lfc_NoMSC)
+# sort the list in decreasing order (required for clusterProfiler)
+TBT_lfc_NoMSC = sort(TBT_lfc_NoMSC, decreasing = TRUE)
+#keytypes(org.Hs.eg.db)
+head(TBT_lfc_NoMSC)
+
+#gene set enrichment
+# gse_TBT_lfc_NoMSC <- gseGO(geneList=TBT_lfc_NoMSC, 
+#              ont = "BP", 
+#              keyType = "SYMBOL", 
+#              minGSSize = 3, 
+#              maxGSSize = 300, 
+#              pvalueCutoff = 0.05, 
+#              verbose = TRUE, 
+#              OrgDb = org.Hs.eg.db, 
+#              pAdjustMethod = "none")
+# gse_TBT_lfc_NoMSC
+dotplot(gse_TBT_lfc_NoMSC,showCategory=10) + ggtitle("GSEA TBT vs DMSO NoMSC")
+###UP regulated###
+TBT_lfc_NoMSC_up <- TBT_lfc_NoMSC[TBT_lfc_NoMSC>0]
+length(TBT_lfc_NoMSC_up)#4057 up regulated genes
+# gse_TBT_lfc_NoMSC_Up <- gseGO(geneList=TBT_lfc_NoMSC_up, 
+#              ont = "BP", 
+#              keyType = "SYMBOL", 
+#              minGSSize = 3, 
+#              maxGSSize = 300, 
+#              pvalueCutoff = 0.05,
+#              nPermSimple= 10000,
+#              verbose = TRUE, 
+#              OrgDb = org.Hs.eg.db, 
+#              pAdjustMethod = "none")
+#write.csv(gse_TBT_lfc_NoMSC_Up,"~/Documents/Git/MSC_Bulk/RNA_seq_Data/TBT_results/gse_TBT_lfc_NoMSC_Up.csv", quote = F)
+dotplot(gse_TBT_lfc_NoMSC_Up,showCategory=10) + ggtitle("GSEA TBT vs DMSO NoMSC Upregulated")
+###EnrichGO
+# enrichGO_TBT_lfc_NoMSC <- enrichGO(gene=unique(unlist(names(TBT_lfc_NoMSC))), 
+#              ont = "BP", 
+#              keyType = "SYMBOL", 
+#              minGSSize = 3, 
+#              maxGSSize = 300, 
+#              pvalueCutoff = 0.05, 
+#              readable = TRUE, 
+#              OrgDb = org.Hs.eg.db, 
+#              pAdjustMethod = "none")
+#enrichGO_TBT_lfc_NoMSC
+#### Reduce clusters######
+#library(rrvgo)
+# simMatrix_TBT_NoMSC <- calculateSimMatrix(gse_TBT_lfc_NoMSC@result$ID, orgdb="org.Hs.eg.db",
+#                                                                method="Rel")
+# 
+# scores_simMatrix_TBT_NoMSC <- setNames(-log10(gse_TBT_lfc_NoMSC@result$qvalues), gse_TBT_lfc_NoMSC@result$ID)
+# reducedTerms_TBT_NoMSC <- reduceSimMatrix(simMatrix_TBT_NoMSC, scores_simMatrix_TBT_NoMSC, threshold = 0.7, orgdb = "org.Hs.eg.db")
+# #heatmapPlot(simMatrix_TBT_NoMSC,reducedTerms_TBT_NoMSC,annotateParent = T,annotationLabel = "parentTerm",fontsize= 6) # this is super noisy
+scatterPlot(simMatrix_TBT_NoMSC,reducedTerms_TBT_NoMSC)
+treemapPlot(reducedTerms_TBT_NoMSC)
+
+### Seperating up vs down regulated genes ####
+####Up Regulated DEGS####
+res_TBT_contrNoMSC_anno_padj_0.05 <- res_TBT_contrNoMSC_anno_padj_0.05[order(res_TBT_contrNoMSC_anno_padj_0.05$padj),]
+res_TBT_contrNoMSC_anno_padj_0.05_up <- res_TBT_contrNoMSC_anno_padj_0.05[which(res_TBT_contrNoMSC_anno_padj_0.05$log2FoldChange>0),]
+res_TBT_contrNoMSC_anno_padj_0.05_up <- res_TBT_contrNoMSC_anno_padj_0.05_up[order(res_TBT_contrNoMSC_anno_padj_0.05_up$lfcSE,decreasing = T),]
+head(res_TBT_contrNoMSC_anno_padj_0.05_up) 
+#normalized counts upregulated
+res_TBT_contrNoMSC_anno_padj_0.05_NC_UP <- res_TBT_contrNoMSC_anno_padj_0.05_NC[rownames(res_TBT_contrNoMSC_anno_padj_0.05_up),]
+head(res_TBT_contrNoMSC_anno_padj_0.05_NC_UP)
+dim(res_TBT_contrNoMSC_anno_padj_0.05_NC_UP) #970 28
+head(res_TBT_contrNoMSC_anno_padj_0.05)
+## Look at top up regualted genes
+top_TBT_NoMSC_Up <- data.frame(res_TBT_contrNoMSC_anno_padj_0.05_NC_UP[1:50,]) %>% rownames_to_column(var ="ensgene")
+dim(top_TBT_NoMSC_Up)
+head(top_TBT_NoMSC_Up)
+top_TBT_NoMSC_Up <- gather(top_TBT_NoMSC_Up, key ="samplename", value ="normalized_counts",2:29)
+head(top_TBT_NoMSC_Up)
+
+top_TBT_NoMSC_Up<- inner_join(top_TBT_NoMSC_Up,
+                     rownames_to_column(coldata_TBT_No_MSC, var ="samplename"),
+                     by ="samplename")
+head(top_TBT_NoMSC_Up)
+top_TBT_up_NoMSC_anno <- data.frame(top_TBT_NoMSC_Up)
+top_TBT_up_NoMSC_anno$symbol<-                                                                                      mapIds(edb,keys=top_TBT_NoMSC_Up$ensgene,column="SYMBOL",keytype="GENEID",multiVals="first")
+#top_TBT_up_NoMSC_anno$symbol
+
+ggplot(top_TBT_up_NoMSC_anno)+
+  geom_point(aes(x = symbol, y = normalized_counts, color = condition))+
+  scale_y_log10()+
+  xlab("Genes")+
+  ylab("Normalized Counts")+
+  ggtitle("Top Upregulated Genes TBT vs DMSO")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle =45, hjust =1))+
+  theme(plot.title = element_text(hjust =0.5))
+
+##Top TBT up no MSC
+ggplot(top_TBT_up_NoMSC_anno)+
+  geom_point(aes(x = symbol, y = normalized_counts, color = condition))+
+  scale_y_log10()+
+  stat_summary(fun=median, geom="point",aes(x=symbol, y=normalized_counts,group= condition,colour = condition),shape=18,size=4)+#This line adds the lines+
+  xlab("Genes")+
+  ylab("Normalized Counts")+
+  ggtitle("Top Upregulated Genes TBT vs DMSO")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle =45, hjust =1))+
+  theme(plot.title = element_text(hjust =0.5))
+
+        
+####Down regulated DEGs####
+res_TBT_contrNoMSC_anno_padj_0.05 <- res_TBT_contrNoMSC_anno_padj_0.05[order(res_TBT_contrNoMSC_anno_padj_0.05$padj),]
+head(res_TBT_contrNoMSC_anno_padj_0.05_NC)
+#normalized counts upregulated
+res_TBT_contrNoMSC_anno_padj_0.05_NC_Down <- res_TBT_contrNoMSC_anno_padj_0.05_NC[rownames(res_TBT_contrNoMSC_anno_padj_0.05[which(res_TBT_contrNoMSC_anno_padj_0.05$log2FoldChange<0),]),]
+dim(res_TBT_contrNoMSC_anno_padj_0.05_NC_Down) #1217 7
+#dim(res_sig_normalized_counts_TBT_Down) #156 27  
+
+top_TBT_NoMSC_Down <- data.frame(res_TBT_contrNoMSC_anno_padj_0.05_NC_Down[1:50,]) %>% rownames_to_column(var ="ensgene")
+dim(top_TBT_NoMSC_Down)#50 8
+head(top_TBT_NoMSC_Down)
+top_TBT_NoMSC_Down <- gather(top_TBT_NoMSC_Down, key ="samplename", value ="normalized_counts",2:8)
+head(top_TBT_NoMSC_Down)
+
+top_TBT_NoMSC_Down<- inner_join(top_TBT_NoMSC_Down,
+                     rownames_to_column(coldata_TBT_No_MSC, var ="samplename"),
+                     by ="samplename")
+head(top_TBT_NoMSC_Down)
+top_TBT_NoMSC_Down_anno <- data.frame(top_TBT_NoMSC_Down)
+dim(top_TBT_NoMSC_Down_anno)
+top_TBT_NoMSC_Down_anno$symbol<-                                                                                      mapIds(edb,keys=top_TBT_NoMSC_Down$ensgene,column="SYMBOL",keytype="GENEID",multiVals="first")
+#top_TBT_NoMSC_Down_anno$symbol
+
+ggplot(top_TBT_NoMSC_Down_anno)+
+  geom_point(aes(x = symbol, y = normalized_counts, color = condition))+
+  scale_y_log10()+
+  xlab("Genes")+
+  ylab("Normalized Counts")+
+  ggtitle("Top Downregulated Genes TBT vs DMSO Day 3")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle =45, hjust =1))+
+  theme(plot.title = element_text(hjust =0.5))
+```
+
+# Lipogenesis Analysis
+When these MSCs are exposed to TBT they become both hypertrophic and hyperplastic. There is an increase in the lipid accumulation as well as the number of cells with lipid. There are 3 major ways that adipocytes accumulated excess lipid.
+
+1. Denovo lipogenesis
+  1. beta oxidation: Break down fatty acids to Acetyl-coA the starting block for the Citric acid cycle:
+    * LCAD, HADHalpha,UCP2,Acox,BOX,CYP2E1,CYP4A11
+  2. Increased Fatty acid synthesis: through citric acid cycle
+    * FAS
+    * acetyl-coA(ACACA)
+    * ACSS2(This is converted to acetyl-co-a from acetate in cases of hypoxia or cancer)
+    * ACLY(converts citrate to acetyl-co-a)
+    * ACCs(acetyl-co-a carboxylases)
+    * FASN(combines Acetyl-co-a with malonyl-coa)RATE LIMITNG STEP OF DENOVO LIPOGENESIS
+    * SCD(Desaturates palamite to produce monosaturated fatty acids)
+  3. regulation of denovo lipogenesis:
+    * SREBPs(transcription factors that bind to insulin induced genes to create a ) (SREBP1a, SREBP1c,SREBPF1)
+    
+  4. Lipolysis: this should be slightly elevated if lipid levels are high
+    * General: ATGL(PNPLA2),HSL(LIPE),MGL(MGLL),ADRB1-3,PDE3b(inhibits lipolysis)
+2. Fatty acid storage: Free fatty acid conversion to Triglycerides for use
+  * DGAT(converts Diglyceride to triglyceride)
+3. Exogenous Fatty acid uptake:
+  * Increased glucose transport
+  * increased Fatty acid transport
+  * Decreased Fatty Acid synthesis
+
+## Genes associated with Fatty acid synthesis:
+* ACACA,ACACB,FASN,MCAT,OLAH,OXSM
+* SREBP1c,SREBP1a,SREBP2,SREBPF1
+* ADRP
+
+## Genes associated with Beta Oxidation
+  * LCAD, HADHalpha,UCP2,Acox,BOX,CYP2E1,CYP4A11
+
+## Genes associated with Triglyceride synthesis:
+  * DGAT1-2(final step), GPAT(1-4)(rate limiting)(AGPAT4 K/O previously associated with icreased Epididymal WAT mass in [mice][https://www.ncbi.nlm.nih.gov/pmc/articles/PMC5625126/]),AGPAT(1-5),PAP(lipin1-3),PPARalpha, HSLdown
+  This [paper too][https://www.ncbi.nlm.nih.gov/pmc/articles/PMC2692402/]
+
+## Genes involeved in lipolysis:
+  * General: ATGL(PNPLA2),HSL(LIPE),MGL(MGLL),ADRB1-3,PDE3b(inhibits lipolysis)
+  * decreaed in obese adipose tissue: PNPLA2,LIPE,MGL(MGLL),ABHD5,PLIN1,CIDEA from [this paper][https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6993275/]
+  
+Note: Cancer cells uptake Free fatty acids when MYC increases, I have seen increases in MYC in several of these data sets. We coul say that this EDC is beginning a cancer like energy accumulation.  [Moreover, amplification of the MYC oncogene drives increased glutamine metabolism and anaplerosis by transcriptionally activating mitochondrial glutaminase (GLS1) and the SLC1A5 glutamine transporter.60,61](https://www.nature.com/articles/s41416-019-0650-z)
+Hyperactivation of the phosphoinositide 3-kinase and AKT (PI3K–AKT) pathway has also been implicated in the rewiring of specific metabolic processes, including increased glucose uptake through stabilisation of glucose transporter 1 (GLUT1), enhanced glutamine anaplerosis via activation of glutamate pyruvate transaminase 2 (GPT2) and remodelling of the cellular lipidome. Same paper
+```{r lipogenesis analysis of TBT DEGs}
+#Genes associated with Fatty acid synthesis######
+head(res_TBT_contrNoMSC_anno_padj_0.05)
+head(res_TBT_contrNoMSC_anno_padj_0.05_NC)
+# ##Genes associated with Fatty acid synthesis:
+FAS_genes <- c("ACACA","ACACB","FASN","MCAT","OLAH","OXSM","SREBP1c","SREBP1a","SREBP2","SREBPF1","ADRP","SCD","ACCS","ACLY")
+FAS_gene_grep <- c("ACACA|ACACB|FASN|MCAT|OLAH|OXSM|SREBP1|SREBP1a|SREBP2|SREBPF1|ADRP|SREB|SCD|ACC|ACLY|CHREBP")
+# Create FAS table
+ TBT_FASN_genes <- res_TBT_contrNoMSC_anno_padj_0.05[grep(FAS_gene_grep,res_TBT_contrNoMSC_anno_padj_0.05$symbol, ignore.case = T),]
+dim(TBT_FASN_genes)
+###Genes associated with Beta Oxidation
+fat_oxidation_genes <- c("LCAD", "HADHA","UCP2","ACOX","BOX","CYP2E1","CYP4A11")
+fat_oxidation_genes_grep <- c("LCAD|HADH|UCP2|ACOX|BOX|CYP2E1|CYP4A11")
+TBT_Oxid_genes <- res_TBT_contrNoMSC_anno_padj_0.05[grep(fat_oxidation_genes_grep,res_TBT_contrNoMSC_anno_padj_0.05$symbol, ignore.case = T),]
+TBT_Oxid_genes_exact <- res_TBT_contrNoMSC_anno_padj_0.05[which(res_TBT_contrNoMSC_anno_padj_0.05$symbol %in% fat_oxidation_genes),]
+TBT_Oxid_genes
+TBT_Oxid_genes <- TBT_Oxid_genes[-9,]#remove BBox-AS1
+###Genes associated with Triglyceride synthesis:
+TG_genes <- c( "DGAT2","PPARA","GPAT3","GPAT4","AGPAT1","PAP", "HSL","AGPAT4","AGPAT3","AGPAT2","LIPIN1")
+TG_genes_grep <- c("DGAT|PPARA|GPAT|AGPAT|LIPIN")
+TBT_TG_genes <- res_TBT_contrNoMSC_anno_padj_0.05[grep(TG_genes_grep,res_TBT_contrNoMSC_anno_padj_0.05$symbol, ignore.case = T),]
+#TBT_TG_genes_exact <- res_TBT_contrNoMSC_anno_padj_0.05[which(res_TBT_contrNoMSC_anno_padj_0.05$symbol %in% TG_genes),]
+#TBT_TG_genes_exact
+# TBT_TG_genes
+###Genes involeved in lipolysis:
+####General: ATGL(PNPLA2),HSL(LIPE),MGLL,ADRB1-3,PDE3b(inhibits lipolysis),decreaed in obese adipose tissue: PNPLA2,LIPE,MGLL,ABHD5,PLIN1,CIDEA
+lipolysis_genes <- c( "ATGL","HSL","PNPLA","LIPE","MGL","MGLL","ADRB","PDE3B","ABHD5","PLIN","CIDEA")
+lipolysis_genes_grep <- c("ATGL|HSL|PNPLA|LIPE|MGL|MGLL|ADRB|ABHD|PLIN|CIDEA|LPL|ADRB|PD3B")
+TBT_lipolysis_genes <- res_TBT_contrNoMSC_anno_padj_0.05[grep(lipolysis_genes_grep,res_TBT_contrNoMSC_anno_padj_0.05$symbol,ignore.case = T),]
+TBT_lipolysis_genes
+# TBT_lipolysis_genes
+TBT_lipolysis_genes <- TBT_lipolysis_genes[-c(12,17:20),]#removing ALPL cause that is differnt that LPL and GAPLINC, RILPL1, and the antisense ABHD11
+#TBT_lipolysis_genes
+# save(list=c("TBT_lipolysis_genes","TBT_FASN_genes","TBT_lipolysis_genes","TBT_TG_genes"),file="~/Documents/Git/MSC_Bulk/RNA_seq_Data/TBT_results/lipolysis_gene_tables.Rdata")
+
+load(file="~/Documents/Git/MSC_Bulk/RNA_seq_Data/TBT_results/lipolysis_gene_tables.Rdata")
+##Plotting Gene expression###
+TBT_FASN_genes
+TBT_FASN_genes <- TBT_FASN_genes[-c(1,7,9,12),]#removing TACC fenes as well as MACC
+res_TBT_contrNoMSC_anno_padj_0.05_NC_FASN<- res_TBT_contrNoMSC_anno_padj_0.05_NC[rownames(TBT_FASN_genes),]
+TBT_NoMSC_FASgenes <- data.frame(res_TBT_contrNoMSC_anno_padj_0.05_NC_FASN) %>% rownames_to_column(var ="ensgene")
+dim(TBT_NoMSC_FASgenes) #11 29
+head(TBT_NoMSC_FASgenes)
+TBT_NoMSC_FASgenes <- gather(TBT_NoMSC_FASgenes, key ="samplename", value ="normalized_counts",2:29)
+head(TBT_NoMSC_FASgenes)
+
+TBT_NoMSC_FASgenes<- inner_join(TBT_NoMSC_FASgenes,
+                     rownames_to_column(coldata_TBT_No_MSC, var ="samplename"),
+                     by ="samplename")
+TBT_NoMSC_FASgenes <- data.frame(TBT_NoMSC_FASgenes)
+TBT_NoMSC_FASgenes$symbol<-                                                                                      mapIds(edb,keys=TBT_NoMSC_FASgenes$ensgene,column="SYMBOL",keytype="GENEID",multiVals="first")
+#TBT_NoMSC_FASgenes$symbol
+#TBT_NoMSC_FASgenes$BP <- "FAS"
+#PLot FASgenes by gene#####
+ggplot(TBT_NoMSC_FASgenes)+
+  geom_point(aes(x = symbol, y = normalized_counts, color = condition))+
+  scale_y_log10()+
+  xlab("Genes")+
+  ylab("Normalized Counts")+
+  ggtitle("FASN Genes TBT vs DMSO")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle =45, hjust =1))+
+  theme(plot.title = element_text(hjust =0.5))
+#Plot FAS genes by day
+ggplot(TBT_NoMSC_FASgenes)+
+  geom_point(aes(x = Day, y = normalized_counts, color = condition))+
+  scale_y_log10()+
+  xlab("Day")+
+  ylab("Normalized Counts")+
+  ggtitle("FASN Genes TBT vs DMSO")+
+  theme_bw()+
+  facet_wrap(~symbol)+
+  theme(axis.text.x = element_text(angle =45, hjust =1))+
+  theme(plot.title = element_text(hjust =0.5))
+
+#Plot FAS genes by day
+ggplot(TBT_NoMSC_FASgenes)+
+  geom_point(aes(x = Day, y = normalized_counts, color = condition))+
+  scale_y_log10()+
+  xlab("Day")+
+  ylab("Normalized Counts")+
+  ggtitle("FASN Genes TBT vs DMSO")+
+  stat_summary(fun=median, geom="line",aes(x=Day, y=normalized_counts,group= condition,colour = condition))+#This line adds the lines
+  theme_bw()+
+  facet_wrap(~symbol)+
+  theme(axis.text.x = element_text(angle =45, hjust =1))+
+  theme(plot.title = element_text(hjust =0.5)) + 
+  stat_compare_means(aes(x=Day,y=normalized_counts,group = condition),method = "t.test")
+library(ggpubr)
+data("ToothGrowth")
+head(ToothGrowth)
+levels(ToothGrowth$supp)
+##Plot Oxidation genes#####
+TBT_Oxid_genes
+
+res_TBT_contrNoMSC_anno_padj_0.05_NC_Oxid<- res_TBT_contrNoMSC_anno_padj_0.05_NC[rownames(TBT_Oxid_genes),]
+TBT_NoMSC_Oxid_genes <- data.frame(res_TBT_contrNoMSC_anno_padj_0.05_NC_Oxid) %>% rownames_to_column(var ="ensgene")
+dim(TBT_NoMSC_Oxid_genes)
+head(TBT_NoMSC_Oxid_genes)
+TBT_NoMSC_Oxid_genes <- gather(TBT_NoMSC_Oxid_genes, key ="samplename", value ="normalized_counts",2:29)
+head(TBT_NoMSC_Oxid_genes)
+
+TBT_NoMSC_Oxid_genes<- inner_join(TBT_NoMSC_Oxid_genes,
+                     rownames_to_column(coldata_TBT_No_MSC, var ="samplename"),
+                     by ="samplename")
+TBT_NoMSC_Oxid_genes <- data.frame(TBT_NoMSC_Oxid_genes)
+TBT_NoMSC_Oxid_genes$symbol<-                                                                                      mapIds(edb,keys=TBT_NoMSC_Oxid_genes$ensgene,column="SYMBOL",keytype="GENEID",multiVals="first")
+#TBT_NoMSC_Oxid_genes$symbol
+#TBT_NoMSC_Oxid_genes$BP <- "OXID"
+#PLot Oxid genes by gene###
+ggplot(TBT_NoMSC_Oxid_genes)+
+  geom_point(aes(x = symbol, y = normalized_counts, color = condition))+
+  scale_y_log10()+
+  xlab("Genes")+
+  ylab("Normalized Counts")+
+  ggtitle("Beta Oxidation Genes TBT vs DMSO")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle =45, hjust =1))+
+  theme(plot.title = element_text(hjust =0.5))
+#Plot Oxid genes by day
+ggplot(TBT_NoMSC_Oxid_genes)+
+  geom_point(aes(x = Day, y = normalized_counts, color = condition))+
+  scale_y_log10()+
+  xlab("Day")+
+  ylab("Normalized Counts")+
+  ggtitle("Beta oxidation Genes TBT vs DMSO")+
+  theme_bw()+
+  facet_wrap(~symbol)+
+  theme(axis.text.x = element_text(angle =45, hjust =1))+
+  theme(plot.title = element_text(hjust =0.5))
+
+#Plot Oxid genes by day
+ggplot(TBT_NoMSC_Oxid_genes)+
+  geom_point(aes(x = Day, y = normalized_counts, color = condition))+
+  scale_y_log10()+
+  xlab("Day")+
+  ylab("Normalized Counts")+
+  ggtitle("Beta oxidation Genes TBT vs DMSO")+
+  stat_summary(fun=median, geom="line",aes(x=Day, y=normalized_counts,group= condition,colour = condition))+#This line adds the lines
+  theme_bw()+
+  facet_wrap(~symbol)+
+  theme(axis.text.x = element_text(angle =45, hjust =1))+
+  theme(plot.title = element_text(hjust =0.5)) +
+  stat_compare_means(aes(x=Day,y=normalized_counts,group = condition),method = "t.test")
+#Plot Triglyceride genes####
+TBT_TG_genes
+res_TBT_contrNoMSC_anno_padj_0.05_NC_TG<- res_TBT_contrNoMSC_anno_padj_0.05_NC[rownames(TBT_TG_genes),]
+TBT_NoMSC_TG_genes <- data.frame(res_TBT_contrNoMSC_anno_padj_0.05_NC_TG) %>% rownames_to_column(var ="ensgene")
+dim(TBT_NoMSC_TG_genes)
+head(TBT_NoMSC_TG_genes)
+TBT_NoMSC_TG_genes <- gather(TBT_NoMSC_TG_genes, key ="samplename", value ="normalized_counts",2:29)
+head(TBT_NoMSC_TG_genes)
+
+TBT_NoMSC_TG_genes<- inner_join(TBT_NoMSC_TG_genes,
+                     rownames_to_column(coldata_TBT_No_MSC, var ="samplename"),
+                     by ="samplename")
+TBT_NoMSC_TG_genes <- data.frame(TBT_NoMSC_TG_genes)
+TBT_NoMSC_TG_genes$symbol<-                                                                                      mapIds(edb,keys=TBT_NoMSC_TG_genes$ensgene,column="SYMBOL",keytype="GENEID",multiVals="first")
+#TBT_NoMSC_TG_genes$symbol
+#TBT_NoMSC_TG_genes$BP <- "TG"
+#PLot TG genes by gene
+ggplot(TBT_NoMSC_TG_genes)+
+  geom_point(aes(x = symbol, y = normalized_counts, color = condition))+
+  scale_y_log10()+
+  xlab("Genes")+
+  ylab("Normalized Counts")+
+  ggtitle("TG Genes TBT vs DMSO")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle =45, hjust =1))+
+  theme(plot.title = element_text(hjust =0.5))
+#Plot TG genes by day
+ggplot(TBT_NoMSC_TG_genes)+
+  geom_point(aes(x = Day, y = normalized_counts, color = condition))+
+  scale_y_log10()+
+  xlab("Day")+
+  ylab("Normalized Counts")+
+  ggtitle("TG Genes TBT vs DMSO")+
+  theme_bw()+
+  facet_wrap(~symbol)+
+  theme(axis.text.x = element_text(angle =45, hjust =1))+
+  theme(plot.title = element_text(hjust =0.5))
+
+#Plot TG genes by day
+ggplot(TBT_NoMSC_TG_genes)+
+  geom_point(aes(x = Day, y = normalized_counts, color = condition))+
+  scale_y_log10()+
+  xlab("Day")+
+  ylab("Normalized Counts")+
+  ggtitle("TG Genes TBT vs DMSO")+
+  stat_summary(fun=median, geom="line",aes(x=Day, y=normalized_counts,group= condition,colour = condition))+#This line adds the lines
+  theme_bw()+
+  facet_wrap(~symbol)+
+  theme(axis.text.x = element_text(angle =45, hjust =1))+
+  theme(plot.title = element_text(hjust =0.5))+
+  stat_compare_means(aes(x=Day,y=normalized_counts,group = condition),method = "t.test")
+
+#Plot Lipolysis genes####
+TBT_lipolysis_genes
+res_TBT_contrNoMSC_anno_padj_0.05_NC_LL<- res_TBT_contrNoMSC_anno_padj_0.05_NC[rownames(TBT_lipolysis_genes),]
+TBT_NoMSC_LL_genes <- data.frame(res_TBT_contrNoMSC_anno_padj_0.05_NC_LL) %>% rownames_to_column(var ="ensgene")
+dim(TBT_NoMSC_LL_genes)
+head(TBT_NoMSC_LL_genes)
+TBT_NoMSC_LL_genes <- gather(TBT_NoMSC_LL_genes, key ="samplename", value ="normalized_counts",2:29)
+head(TBT_NoMSC_LL_genes)
+
+TBT_NoMSC_LL_genes<- inner_join(TBT_NoMSC_LL_genes,
+                     rownames_to_column(coldata_TBT_No_MSC, var ="samplename"),
+                     by ="samplename")
+TBT_NoMSC_LL_genes <- data.frame(TBT_NoMSC_LL_genes)
+TBT_NoMSC_LL_genes$symbol<-                                                                                      mapIds(edb,keys=TBT_NoMSC_LL_genes$ensgene,column="SYMBOL",keytype="GENEID",multiVals="first")
+#TBT_NoMSC_LL_genes$symbol
+#TBT_NoMSC_LL_genes$BP <- "LL"
+#PLot LL genes by gene
+ggplot(TBT_NoMSC_LL_genes)+
+  geom_point(aes(x = symbol, y = normalized_counts, color = condition))+
+  scale_y_log10()+
+  xlab("Genes")+
+  ylab("Normalized Counts")+
+  ggtitle("LL Genes TBT vs DMSO")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle =45, hjust =1))+
+  theme(plot.title = element_text(hjust =0.5))
+#Plot LL genes by day
+ggplot(TBT_NoMSC_LL_genes)+
+  geom_point(aes(x = Day, y = normalized_counts, color = condition))+
+  scale_y_log10()+
+  xlab("Day")+
+  ylab("Normalized Counts")+
+  ggtitle("LL Genes TBT vs DMSO")+
+  theme_bw()+
+  facet_wrap(~symbol)+
+  theme(axis.text.x = element_text(angle =45, hjust =1))+
+  theme(plot.title = element_text(hjust =0.5))
+
+#Plot LL genes by day
+ggplot(TBT_NoMSC_LL_genes)+
+  geom_point(aes(x = Day, y = normalized_counts, color = condition))+
+  scale_y_log10()+
+  xlab("Day")+
+  ylab("Normalized Counts")+
+  ggtitle("LL Genes TBT vs DMSO")+
+  stat_summary(fun=median, geom="line",aes(x=Day, y=normalized_counts,group= condition,colour = condition))+
+  theme_bw()+
+  facet_wrap(~symbol)+
+  theme(axis.text.x = element_text(angle =45, hjust =1))+
+  theme(plot.title = element_text(hjust =0.5))+
+  stat_compare_means(aes(x=Day,y=normalized_counts,group = condition),method = "t.test")
+
+TBT_NoMSC_LL_genes[which(TBT_NoMSC_LL_genes$symbol=="PLIN4"),]
+mean(TBT_NoMSC_LL_genes$normalized_counts[c(43,57,71,85)]) -mean(TBT_NoMSC_LL_genes$normalized_counts[c(1,15,29)])
+```
+
+Overall I am seeing a large increase in Fatty acid synthesis, some increase in specifically the UCP/BOX genes associated with beta oxidation, and an decrease in select Triglyceride genes like PAPPA. Finally I am seeing some decrease in the lipolysis genes liie LIPE  but several others show slight increases
+
+##Divergent Barplot with days
+```{r divergent}
+##Load in the tables from above that I need.
+###Make means table
+library(MatrixGenerics)
+colnames(res_TBT_contrNoMSC_anno_padj_0.05_NC)
+res_TBT_contrNoMSC_anno_padj_0.05_NC
+res_TBT_contrNoMSC_anno_padj_0.05_NC_log <- log2(res_TBT_contrNoMSC_anno_padj_0.05_NC)
+res_TBT_contrNoMSC_anno_padj_0.05_NC_scale <- t(scale(t(res_TBT_contrNoMSC_anno_padj_0.05_NC)))
+
+TBT_res_noMSC_Mean_P0.05_log <- data.frame(row.names = rownames(res_TBT_contrNoMSC_anno_padj_0.05_NC_log),BD=rowMeans(res_TBT_contrNoMSC_anno_padj_0.05_NC_log[,1:3]),BT=rowMeans(res_TBT_contrNoMSC_anno_padj_0.05_NC_log[,4:7]),CD=rowMeans(res_TBT_contrNoMSC_anno_padj_0.05_NC_log[,8:11]),CT=rowMeans(res_TBT_contrNoMSC_anno_padj_0.05_NC_log[,12:15]),DD=rowMeans(res_TBT_contrNoMSC_anno_padj_0.05_NC_log[,16:18]),DT=rowMeans(res_TBT_contrNoMSC_anno_padj_0.05_NC_log[,19:22]),ED=rowMeans(res_TBT_contrNoMSC_anno_padj_0.05_NC_log[,23:25]),ET=rowMeans(res_TBT_contrNoMSC_anno_padj_0.05_NC_log[,26:28]))
+
+##Table of condition means
+TBT_res_noMSC_Mean_P0.05 <- data.frame(row.names = rownames(res_TBT_contrNoMSC_anno_padj_0.05_NC),BD=rowMeans(res_TBT_contrNoMSC_anno_padj_0.05_NC[,1:3]),BT=rowMeans(res_TBT_contrNoMSC_anno_padj_0.05_NC[,4:7]),CD=rowMeans(res_TBT_contrNoMSC_anno_padj_0.05_NC[,8:11]),CT=rowMeans(res_TBT_contrNoMSC_anno_padj_0.05_NC[,12:15]),DD=rowMeans(res_TBT_contrNoMSC_anno_padj_0.05_NC[,16:18]),DT=rowMeans(res_TBT_contrNoMSC_anno_padj_0.05_NC[,19:22]),ED=rowMeans(res_TBT_contrNoMSC_anno_padj_0.05_NC[,23:25]),ET=rowMeans(res_TBT_contrNoMSC_anno_padj_0.05_NC[,26:28]))
+
+colnames(res_TBT_contrNoMSC_anno_padj_0.05_NC)
+
+TBT_res_noMSC_Mean_P0.05_log10norm <- data.frame(log10(TBT_res_noMSC_Mean_P0.05))
+###making log-log table for all days togeter
+res_TBT_contrNoMSC_anno_padj_0.05_NC_relativetocontrol_D3 <- data.frame(res_TBT_contrNoMSC_anno_padj_0.05_NC[,1:7]-TBT_res_noMSC_Mean_P0.05$BD)
+res_TBT_contrNoMSC_anno_padj_0.05_NC_relativetocontrol_D7 <- data.frame(res_TBT_contrNoMSC_anno_padj_0.05_NC[,8:15]-TBT_res_noMSC_Mean_P0.05$CD)
+res_TBT_contrNoMSC_anno_padj_0.05_NC_relativetocontrol_D10 <- data.frame(res_TBT_contrNoMSC_anno_padj_0.05_NC[,16:22]-TBT_res_noMSC_Mean_P0.05$DD)
+res_TBT_contrNoMSC_anno_padj_0.05_NC_relativetocontrol_D14 <- data.frame(res_TBT_contrNoMSC_anno_padj_0.05_NC[,23:28]-TBT_res_noMSC_Mean_P0.05$ED)
+res_TBT_contrNoMSC_anno_padj_0.05_NC_relativetocontrol <- cbind(res_TBT_contrNoMSC_anno_padj_0.05_NC_relativetocontrol_D3,res_TBT_contrNoMSC_anno_padj_0.05_NC_relativetocontrol_D7,res_TBT_contrNoMSC_anno_padj_0.05_NC_relativetocontrol_D10,res_TBT_contrNoMSC_anno_padj_0.05_NC_relativetocontrol_D14)
+
+
+###making log-log table for all days togeter
+res_TBT_contrNoMSC_anno_padj_0.05_NC_Mean_relativetocontrol_D3 <- data.frame(BT=rowMeans(res_TBT_contrNoMSC_anno_padj_0.05_NC[,4:7])-TBT_res_noMSC_Mean_P0.05$BD,CT= rowMeans(res_TBT_contrNoMSC_anno_padj_0.05_NC[,12:15])-TBT_res_noMSC_Mean_P0.05$CD,
+DT=rowMeans(res_TBT_contrNoMSC_anno_padj_0.05_NC[,19:22])-TBT_res_noMSC_Mean_P0.05$DD,ET=rowMeans(res_TBT_contrNoMSC_anno_padj_0.05_NC[,26:28])-TBT_res_noMSC_Mean_P0.05$ED)
+
+log10(res_TBT_contrNoMSC_anno_padj_0.05_NC_Mean_relativetocontrol_D3)
+res_TBT_contrNoMSC_anno_padj_0.05_NC_Mean_relativetocontrol <- cbind(res_TBT_contrNoMSC_anno_padj_0.05_NC_Mean_relativetocontrol_D3,res_TBT_contrNoMSC_anno_padj_0.05_NC_Mean_relativetocontrol_D7,res_TBT_contrNoMSC_anno_padj_0.05_NC_Mean_relativetocontrol_D10,res_TBT_contrNoMSC_anno_padj_0.05_NC_Mean_relativetocontrol_D14)
+ res_TBT_contrNoMSC_anno_padj_0.05_NC_Mean_relativetocontrol_log <- log2(res_TBT_contrNoMSC_anno_padj_0.05_NC_Mean_relativetocontrol)
+
+
+###Scaled Normalization
+res_TBT_contrNoMSC_anno_padj_0.05_NC_relativetocontrol_D3 <- data.frame(log2(res_TBT_contrNoMSC_anno_padj_0.05_NC[,1:7])-TBT_res_noMSC_Mean_P0.05_log$BD)
+res_TBT_contrNoMSC_anno_padj_0.05_NC_relativetocontrol_D7 <- data.frame(log2(res_TBT_contrNoMSC_anno_padj_0.05_NC[,8:15])-TBT_res_noMSC_Mean_P0.05_log$CD)
+res_TBT_contrNoMSC_anno_padj_0.05_NC_relativetocontrol_D10 <- data.frame(log2(res_TBT_contrNoMSC_anno_padj_0.05_NC[,16:22])-TBT_res_noMSC_Mean_P0.05_log$DD)
+res_TBT_contrNoMSC_anno_padj_0.05_NC_relativetocontrol_D14 <- data.frame(log2(res_TBT_contrNoMSC_anno_padj_0.05_NC[,23:28])-TBT_res_noMSC_Mean_P0.05_log$ED)
+res_TBT_contrNoMSC_anno_padj_0.05_NC_relativetocontrol <- cbind(res_TBT_contrNoMSC_anno_padj_0.05_NC_relativetocontrol_D3,res_TBT_contrNoMSC_anno_padj_0.05_NC_relativetocontrol_D7,res_TBT_contrNoMSC_anno_padj_0.05_NC_relativetocontrol_D10,res_TBT_contrNoMSC_anno_padj_0.05_NC_relativetocontrol_D14)
+res_TBT_contrNoMSC_anno_padj_0.05_NC_relativetocontrol
+res_TBT_contrNoMSC_anno_padj_0.05_NC_scale
+##Subset for Lipolysis genes
+TBT_res_noMSC_P0.05_LL <- res_TBT_contrNoMSC_anno_padj_0.05_NC_relativetocontrol[which(rownames(res_TBT_contrNoMSC_anno_padj_0.05_NC_relativetocontrol)%in% rownames(TBT_lipolysis_genes)),]
+rownames(TBT_res_noMSC_P0.05_LL) <- TBT_lipolysis_genes$symbol
+
+TBT_res_noMSC_Mean_P0.05_LL_normedbyday_TBT <- data.frame( row.names = rownames(TBT_res_noMSC_P0.05_LL),BT=rowMeans(TBT_res_noMSC_P0.05_LL[,4:7]),CT=rowMeans(TBT_res_noMSC_P0.05_LL[,12:15]),DT=rowMeans(TBT_res_noMSC_P0.05_LL[,19:22]),ET=rowMeans(TBT_res_noMSC_P0.05_LL[,26:28]),symbol=rownames(TBT_res_noMSC_P0.05_LL))
+
+
+head(TBT_res_noMSC_Mean_P0.05_LL_normedbyday_TBT)
+str(TBT_res_noMSC_Mean_P0.05_LL_normedbyday_TBT)
+LL_normedbyday_TBT <- data.frame(TBT_res_noMSC_Mean_P0.05_LL_normedbyday_TBT) %>% rownames_to_column(var ="ensgene")
+dim(LL_normedbyday_TBT)
+head(LL_normedbyday_TBT)
+LL_normedbyday_TBT <- gather(LL_normedbyday_TBT, key ="samplename", value ="normalized_counts",2:5)
+head(LL_normedbyday_TBT)
+ggplot(LL_normedbyday_TBT, aes(y = ensgene, x = normalized_counts,fill = samplename)) +
+  geom_bar(stat = "identity",
+           position = "dodge",
+           show.legend = TRUE) + # Remove the legend +
+  xlab("TBT log2 Lipolysis Relative Gene expression to DMSO by day") +
+  ylab("TBT_Lipolysis")
+
+
+TBT_res_noMSC_Mean_P0.05_LL_normedbyday_TBT$symbol <- factor(TBT_res_noMSC_Mean_P0.05_LL_normedbyday_TBT$symbol)
+
+str(TBT_res_noMSC_Mean_P0.05_LL_normedbyday_TBT)
+#color <- ifelse(df_AT_TBT_MSC_log2_normed_reorder$Day_14_TBT < 0, degascolor[6], degascolor[4])
+ggplot(TBT_res_noMSC_Mean_P0.05_LL_normedbyday_TBT, aes(y = symbol, x = BT)) +
+  geom_bar(stat = "identity",
+           show.legend = FALSE) + # Remove the legend +
+  xlab("TBT log2 Lipolysis Relative Gene expression to DMSO by day") +
+  ylab("Lipolysis genes") + scale_x_continuous(limits = c(-2.5,2.5))
+
+ggplot(TBT_res_noMSC_Mean_P0.05_LL_normedbyday_TBT, aes(y = symbol, x = CT)) +
+  geom_bar(stat = "identity",
+           show.legend = FALSE) + # Remove the legend +
+  xlab("TBT D7 log2 Lipolysis Relative Gene expression to DMSO by day") +
+  ylab("Lipolysis genes") + scale_x_continuous(limits = c(-4,4))
+
+ggplot(TBT_res_noMSC_Mean_P0.05_LL_normedbyday_TBT, aes(y = symbol, x = DT)) +
+  geom_bar(stat = "identity",
+           show.legend = FALSE) + # Remove the legend +
+  xlab("TBT D10 log2 Lipolysis Relative Gene expression to DMSO by day") +
+  ylab("Lipolysis genes") + scale_x_continuous(limits = c(-4,4))
+
+ggplot(TBT_res_noMSC_Mean_P0.05_LL_normedbyday_TBT, aes(y = symbol, x = ET)) +
+  geom_bar(stat = "identity",
+           show.legend = FALSE) + # Remove the legend +
+  xlab("TBT D14 log2 Lipolysis Relative Gene expression to DMSO by day") +
+  ylab("Lipolysis genes") + scale_x_continuous(limits = c(-4,4))
+
+
+##Subset for FAtty acid synth genes
+TBT_res_noMSC_P0.05_FAS <- res_TBT_contrNoMSC_anno_padj_0.05_NC_relativetocontrol[which(rownames(res_TBT_contrNoMSC_anno_padj_0.05_NC_relativetocontrol)%in% rownames(TBT_FASN_genes)),]
+rownames(TBT_res_noMSC_P0.05_FAS) <- TBT_FASN_genes$symbol
+
+TBT_res_noMSC_Mean_P0.05_FAS_normedbyday_TBT <- data.frame( row.names = rownames(TBT_res_noMSC_P0.05_FAS),BT=rowMeans(TBT_res_noMSC_P0.05_FAS[,4:7]),CT=rowMeans(TBT_res_noMSC_P0.05_FAS[,12:15]),DT=rowMeans(TBT_res_noMSC_P0.05_FAS[,19:22]),ET=rowMeans(TBT_res_noMSC_P0.05_FAS[,26:28]),symbol=rownames(TBT_res_noMSC_P0.05_FAS))
+
+
+
+head(TBT_res_noMSC_Mean_P0.05_FAS_normedbyday_TBT)
+str(TBT_res_noMSC_Mean_P0.05_FAS_normedbyday_TBT)
+FAS_normedbyday_TBT <- data.frame(TBT_res_noMSC_Mean_P0.05_FAS_normedbyday_TBT) %>% rownames_to_column(var ="ensgene")
+dim(FAS_normedbyday_TBT)
+head(FAS_normedbyday_TBT)
+FAS_normedbyday_TBT <- gather(FAS_normedbyday_TBT, key ="samplename", value ="normalized_counts",2:5)
+head(FAS_normedbyday_TBT)
+ggplot(FAS_normedbyday_TBT, aes(y = ensgene, x = normalized_counts,fill = samplename)) +
+  geom_bar(stat = "identity",
+           position = "dodge",
+           show.legend = TRUE) + # Remove the legend +
+  xlab("TBT log2  Relative Gene expression to DMSO by day") +
+  ylab("TBTFatty Acid Synthesis genes")
+
+
+ m##Subset for TG genes
+TBT_res_noMSC_P0.05_TG <- res_TBT_contrNoMSC_anno_padj_0.05_NC_relativetocontrol[which(rownames(res_TBT_contrNoMSC_anno_padj_0.05_NC_relativetocontrol)%in% rownames(TBT_TG_genes)),]
+rownames(TBT_res_noMSC_P0.05_TG) <- TBT_TG_genes$symbol
+
+TBT_res_noMSC_Mean_P0.05_TG_normedbyday_TBT <- data.frame( row.names = rownames(TBT_res_noMSC_P0.05_TG),BT=rowMeans(TBT_res_noMSC_P0.05_TG[,4:6]),CT=rowMeans(TBT_res_noMSC_P0.05_TG[,12:15]),DT=rowMeans(TBT_res_noMSC_P0.05_TG[,19:22]),ET=rowMeans(TBT_res_noMSC_P0.05_TG[,26:28]),symbol=rownames(TBT_res_noMSC_P0.05_TG))
+
+head(TBT_res_noMSC_Mean_P0.05_TG_normedbyday_TBT)
+str(TBT_res_noMSC_Mean_P0.05_TG_normedbyday_TBT)
+TG_normedbyday_TBT <- data.frame(TBT_res_noMSC_Mean_P0.05_TG_normedbyday_TBT) %>% rownames_to_column(var ="ensgene")
+dim(TG_normedbyday_TBT)
+head(TG_normedbyday_TBT)
+TG_normedbyday_TBT <- gather(TG_normedbyday_TBT, key ="samplename", value ="normalized_counts",2:5)
+head(TG_normedbyday_TBT)
+ggplot(TG_normedbyday_TBT, aes(y = ensgene, x = normalized_counts,fill = samplename)) +
+  geom_bar(stat = "identity",
+           position = "dodge",
+           show.legend = TRUE) + # Remove the legend +
+  xlab("TBT log2 Relative Gene expression to DMSO by day") +
+  ylab("TBT Triglyceride genes")
+
+```

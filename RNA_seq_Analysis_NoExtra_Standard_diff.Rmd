@@ -1,0 +1,3046 @@
+---
+title: "RNA_seq_Analysis_NoOutliers"
+author: "Taylor"
+date: "1/21/2022"
+output: html_document
+---
+#No Outliers
+I will be rerunning the Basic Analysis and the Standard Differentiation analysis without any of the extra samples. These samples are still clustering with the other samples from their day and condition, but they are showing some different expresion signatures that are pretty distinct. So let's get started. 
+
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "~/Documents/Git/MSC_Bulk/RNA_seq_Data/")
+suppressPackageStartupMessages({
+  library(rrvgo)
+  library(pheatmap)
+  library(RColorBrewer)
+  library(DESeq2)
+  library(BSgenome.Hsapiens.UCSC.hg38)
+  library(tidyverse)
+  library(dbplyr)
+  library(annotables)
+  library(org.Hs.eg.db)
+  library(AnnotationDbi)
+  library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+  library(EnsDb.Hsapiens.v86)
+  library(EnhancedVolcano)
+  library(ComplexHeatmap)
+  library(ChIPpeakAnno)
+  library(MetBrewer)
+  library(bigPint)
+  library(enrichplot)
+  library(clusterProfiler)
+  library(cluster)
+  library(ReactomePA)
+  library(ggplot2)
+  library(GGally)
+  library(plotly)
+})
+```
+```{r load variables}
+load("RNA_seq_Data/DESeq2_Variables_Preanalyzed.RData") #this will have all of the preanalyzed data
+```
+##loading in data
+```{r loading basic analysis variables}
+load(file = "~/Documents/Git/MSC_Bulk/RNA_seq_Data/SD_No_Extras.Rdata")
+#This variable has all of the variables I will create up to the Visualization section 
+```
+
+#Basic analysis
+This starts out with the basic analysis of all the sample for with the condition(TBT,ROSI,control) as the object that the program is comparing the samples with. 
+I will remove all of the outlier samples that arn't clustering well with the other days. 
+The RMArkdowns that I need to make after this are:
+  *1vs1 comparisons for ROSI vs DMSO by day
+  *1vs1 comparisons for TBT vs DMSO by day
+These will help to show that the most variability between the Condition and control. So I will subset the data. 
+At the end of all of these analyses I will need to add STring/Go analysis to look for patterns, and then pull in the ATAC-seq data. 
+
+
+```{r, eval=FALSE}
+#BiocManager::install("DESeq2")
+suppressPackageStartupMessages(library("DESeq2"))
+
+#Subsetting the data to only have the pertinent information
+cts_mat_SD_Noextra <- cts_mat[,which(substr(colnames(cts_mat),2,2)=="D" | substr(colnames(cts_mat),1,2)=="AO")]
+rownames(cts_mat_SD_Noextra) <- substr(rownames(cts_mat_SD_Noextra),1,15)#Removing the .# on the gene names
+
+coldata_SD_Noextra <- coldata_norm[which(substr(rownames(coldata_norm),2,2)=="D" | substr(rownames(coldata_norm),1,2)=="AO"),]
+dim(cts_mat_SD_Noextra) #58037 16
+dim(coldata_SD_Noextra) #16 5
+
+##Creating DDS object from the subset data                                  
+
+dds_SD_NoExtra <- DESeqDataSetFromMatrix(countData = cts_mat_SD_Noextra,
+                                                 colData = coldata_SD_Noextra,
+                                                 design = ~ Time
+                                                 )
+summary(dds_SD_NoExtra)
+head(dds_SD_NoExtra)   
+
+
+resultsNames(dds_SD_NoExtra)
+```
+
+Add in feature data using metadata columns of DESeq object
+
+```{r Adding feature/metadata to a dds object,eval=FALSE}
+#The data I have nas a laging period and number after the ensmble gene name so I am removind that first then rerunning it all 
+featureData <- data.frame(gene=substr(rownames(cts_mat_SD_Noextra),1,15))
+mcols(dds_SD_NoExtra) <- DataFrame(mcols(dds_SD_NoExtra), featureData)
+mcols(dds_SD_NoExtra)
+
+```
+
+Pre- filtering. Pre-filtering of count data, while not necessary for
+analysis at this point, can help to minimize processing time of DESeq
+functions!
+
+## Filtering DDS Object
+
+```{r Filtering a dds object,eval=FALSE}
+keep <- rowSums(counts(dds_SD_NoExtra)) >= 50 #23202 genes passed this low bar
+dds_SD_NoExtra <- dds_SD_NoExtra[keep,]
+dim(dds_SD_NoExtra)
+```
+
+Setting factor levels. It can be useful to designate factor levels while
+formatting your dds object since it will influence the manner in which
+DESeq compares different groups within your data.
+
+You can specify levels either using factor()
+
+```{r Generating dds object, eval=FALSE}
+dds_SD_NoExtra$condition <- factor(dds_SD_NoExtra$condition, levels = c("control","ROSI","TBT"))
+dds_SD_NoExtra$condition
+```
+
+\#NORMALIZE: This is self-explanitory. This will normalize the data so
+that we aren't getting a lot of outliers.
+
+```{r normalize }
+# Determine the size factors to use for normalization
+dds_SD_NoExtra <- estimateSizeFactors(dds_SD_NoExtra)
+sizeFactors(dds_SD_NoExtra)
+# Extract the normalized counts
+normalized_counts_SD_NoExtra <- counts(dds_SD_NoExtra,normalized = T)
+head(normalized_counts_SD_NoExtra)
+
+######## Creating log fold change table from normalized data#############
+### fist calcluate the medians for each condiiton
+# dim(normalized_counts_SD_NoExtra)#13013 16
+# 
+# colnames(normalized_counts_SD_NoExtra)
+# SD_NE_median_normcounts_df <- data.frame(A=rowMedians(normalized_counts_SD_NoExtra[,1:3]),B=rowMedians(normalized_counts_SD_NoExtra[,4:6]),C=rowMedians(normalized_counts_SD_NoExtra[,7:10]),D=rowMedians(normalized_counts_SD_NoExtra[,11:13]),E=rowMedians(normalized_counts_SD_NoExtra[,14:16]),row.names = rownames(normalized_counts_SD_NoExtra))
+# head(SD_NE_median_normcounts_df)
+# dim(SD_NE_median_normcounts_df)#13013 5 
+# 
+# #####calculate log fold change compared to day 0 #############
+# l2fc_MSC0_SD_NE_df <- data.frame(l2fc_A=(log2(SD_NE_median_normcounts_df$A)-log2(SD_NE_median_normcounts_df$A)),l2fc_B=(log2(SD_NE_median_normcounts_df$B)-log2(SD_NE_median_normcounts_df$A)),l2fc_C=(log2(SD_NE_median_normcounts_df$C)-log2(SD_NE_median_normcounts_df$A)),l2fc_D=(log2(SD_NE_median_normcounts_df$D)-log2(SD_NE_median_normcounts_df$A)),l2fc_E=(log2(SD_NE_median_normcounts_df$E)-log2(SD_NE_median_normcounts_df$A)),row.names = rownames(SD_NE_median_normcounts_df))
+# 
+# head(l2fc_MSC0_SD_NE_df)
+# l2fc_MSC0_SD_NE_df_anno <- data.frame(l2fc_MSC0_SD_NE_df) %>% rownames_to_column(var="ensgene") 
+# l2fc_MSC0_SD_NE_df_anno <- left_join(x=l2fc_MSC0_SD_NE_df_anno, y = grch38[,c("ensgene","symbol","description")],  by="ensgene")
+# dim(l2fc_MSC0_SD_NE_df) #2869 5
+# dim(l2fc_MSC0_SD_NE_df_anno)#29054
+# ### Remove NA rows 
+# l2fc_MSC0_SD_NE_df_anno <- l2fc_MSC0_SD_NE_df_anno[-which(is.na(l2fc_MSC0_SD_NE_df_anno$symbol)),]
+# dim(l2fc_MSC0_SD_NE_df_anno)#28960 8 Still too many rows by about 100 they are probably duplicates
+```
+
+Check correlation of data
+##Clustering Variace
+VST stands for Variance stablizind transformation which is based on negative binomial data with a dispetion mean trend. 
+Genes with high counts will haev similar VST and Rlog results to the ordinary log2 tranformaiton of the normalized counts. Genes with lower counts will be flattened out this allows us to use the VST and rlog data for better PCAs. 
+###VST vs rlog
+VST is much faster ot compute and less sensitive to outliers than the rlog. rlog is better for smaller datasets with samples sizeds below ~30. you can perform both VST and rlog if you are unsure and then compare the meanSdPlot  or PCAs to see which generates better data. 
+```{r correlation heatmaps}
+suppressPackageStartupMessages(library(pheatmap))
+
+# Transform based on the normalization factors to create normalized counts 
+vsd_SD_NoExtra <- vst(dds_SD_NoExtra,blind=F )
+
+# Extract the matrix of transformed counts
+vsd_mat_SD_NoExtra <- assay(vsd_SD_NoExtra)
+
+# Compute the correlation values between samples
+vsd_cor_SD_NoExtra <- cor(vsd_mat_SD_NoExtra) 
+
+# Plot the heatmap
+pheatmap(vsd_cor_SD_NoExtra)
+```
+
+\#PCA time
+
+```{r pca of all RNA-seq data}
+# Transform the normalized counts 
+
+#determine what to dolor the data by 
+colData(vsd_SD_NoExtra)
+# Plot the PCA of PC1 and PC2
+plotPCA(vsd_SD_NoExtra, intgroup= "condition")
+```
+
+\#Looking at the other PCs
+
+```{r}
+plotPCA(vsd_SD_NoExtra, intgroup = "Time")
+```
+
+\#Checing Dispersion
+
+```{r Dispersion, eval=FALSE}
+# Plot dispersions
+# This is not working for me and I am not sure why 
+plotDispEsts(dds_SD_NoExtra)
+```
+```{r Differential Expression calc, echo=FALSE, eval= FALSE}
+#We didn't need to remave any of the samples so the basic analyis will be the same by conditon
+# dds_1021 <- DESeqDataSetFromMatrix(countData = cts_mat,
+#                                                  colData = coldata_norm,
+#                                                  design = ~ condition
+#                                                  )
+DES_SD_NoExtra <- DESeq(dds_SD_NoExtra)
+res_SD_NoExtra <- results(DES_SD_NoExtra)
+head(res_SD_NoExtra)
+mcols(res_SD_NoExtra)
+```
+##Time Course regression
+#Time Course Analysis
+Section 9 of this vignette explains how to do wome preliminary Time course analysis for data. I will be using thee outline here to see if I can't get some basic analysis done for how time plays a role in the expresion. They utilize the design function that models the strain differnce at time 0 the difference over time and any specific differnct ove time by using the term Strain:minutes to account for how the strains differ over time.  https://bioconductor.org/packages/release/workflows/vignettes/rnaseqGene/inst/doc/rnaseqGene.html#differential-expression-analysis
+
+```{r time course example with fission data, eval = FALSE}
+#BiocManager::install("fission")
+#dds_sm <- DESeqDataSet(fission, ~ strain + minute + strain:minute)'
+
+head(coldata_SD_Noextra)
+#coldata_SD_Noextra$Day <- c(rep(0,3),rep(14,2),rep(0,3),rep(3,11),rep(7,12),rep(10,10),rep(14,9))
+#coldata_SD_Noextra$condition <- factor(coldata_norm$condition, levels = c("control","ROSI","TBT"))
+#coldata_SD_Noextra$Time <- factor(coldata_norm$Time,levels = c("Day_0","Day_10","Day_14","Day_3","Day_7"))
+
+# rownames(dds_1021) <- substr(rownames(dds_1021),1,15)
+# featureData <- data.frame(gene=substr(rownames(cts_1021),1,15))
+# mcols(dds_1021) <- DataFrame(mcols(dds_1021), featureData)
+# mcols(dds_1021)
+
+coldata_norm$Day <- factor(coldata_norm$Day)
+
+coldata_norm$Day
+coldata_SD_Noextra$Day
+
+mcols(res_SD_NoExtra)
+
+```
+
+## Filtering results for Day 14 significant
+
+I am adding a specific contrast and alpha values to help remove some of the extra low hanging fruit.  
+The contrast here is looking for the comparison within my results for anything that is significant only at day 14. 
+```{r Differential Expression results}
+res_SD_NoExtra_alph05 <- results(DES_SD_NoExtra, contrast=c("Time","Day_14","Day_0"),alpha = 0.05)
+head(res_SD_NoExtra_alph05)
+resultsNames(res_SD_NoExtra_alph05)
+```
+##Annotate Results DAy 0 DAy 14
+
+```{r Annotate, eval=FALSE}
+#install.packages("devtools")
+#devtools::install_github("stephenturner/annotables")
+library(dbplyr)
+library(annotables)
+#grch38 # This is the genome build that I will be using for the annotation
+
+res_SD_NoExtra_alph05_anno <- data.frame(res_SD_NoExtra_alph05) %>% rownames_to_column(var = "genes")
+res_SD_NoExtra_alph05_anno$ensgene <- substr(res_SD_NoExtra_alph05_anno$genes,1,15)
+ 
+res_SD_NoExtra_alph05_anno <- left_join(x=res_SD_NoExtra_alph05_anno, y = grch38[,c("ensgene","symbol","description")],  by="ensgene")
+```
+## Checkin on Key Genes
+```{r look at leptin}
+head(res_SD_NoExtra_alph05_anno)
+lepsrescont <- grep(res_SD_NoExtra_alph05_anno$symbol, pattern = "LEP")
+res_SD_NoExtra_alph05_anno[lepsrescont,]
+
+```
+```{r top Variance genes}
+library("genefilter")
+#Lets us thee variance tables to get the samples that had the biggest discrepencey for day 0 to day 14. Then crease a heatmap to visualize the top genes that plat this role. We can use this to see which of the MSC s playted a larger role in the definithion of MSCs by what genes 
+VarGenes_SD_NE <- head(order(rowVars(assay(vsd_SD_NoExtra)),decreasing = TRUE),50)
+
+#Create a matrix of the top genes 
+VG_mat_SD_NE  <- assay(vsd_SD_NoExtra)[VarGenes_SD_NE,]
+head(vsd_SD_NoExtra)
+VG_mat_SD_NE  <- VG_mat_SD_NE - rowMeans(VG_mat_SD_NE)
+anno <- as.data.frame(colData(vsd_SD_NoExtra)[, c("condition","Time")])
+
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+library(EnsDb.Hsapiens.v86)
+edb <- EnsDb.Hsapiens.v86
+organism(edb)
+keytypes(edb)
+keys(edb,keytype = "GENEID")
+
+## Annotating significant table
+dim(VG_mat_SD_NE)#Significant results day 0 to day 14 ordered by padj values the data rames has dimisions of 13013 6 
+VG_mat_SD_NE_annoDbi <- data.frame(VG_mat_SD_NE)
+VG_mat_SD_NE_annoDbi$symbol<-                                                                                      mapIds(edb,keys=rownames(VG_mat_SD_NE_annoDbi),column="SYMBOL",keytype="GENEID",multiVals="first")
+dim(VG_mat_SD_NE_annoDbi) #13013 7 
+rownames(VG_mat_SD_NE) <- VG_mat_SD_NE_annoDbi$symbol
+pheatmap(VG_mat_SD_NE, annotation_col = anno)
+```
+Log fold change shrinkage for visualization and ranking This will help to show which genes are important and which aren't.
+
+```{r Differential Expression logfold, eval=FALSE}
+#BiocManager::install("apeglm")
+#library(apeglm)
+# Shrink the log2 fold change estimates to be more accurate
+res_SD_NoExtra_alph05_lfc <- results(DES_SD_NoExtra, 
+                        contrast=c("Time","Day_14","Day_0"),
+                        alpha = 0.05,
+                        lfcThreshold = 0.2)
+resultsNames(res_SD_NoExtra_alph05)
+resultsNames(DES_SD_NoExtra)#results without lfcthreshold
+res_SD_D0_D14_LFC <- lfcShrink(DES_SD_NoExtra,
+                    coef ="Time_Day_14_vs_Day_0", type = "apeglm",
+                    res = res_SD_NoExtra_alph05_lfc)
+                    
+summary(res_SD_D0_D14_LFC)
+#Save results as a dataframe
+res_cont_SD_NoExtraa05_lfc02_df <- data.frame(res_SD_NoExtra_alph05_lfc)
+res_SD_D0_D14_LFC
+```
+
+
+p-values and adjusted p-values
+
+Reorganize your results by p-value, place the smaller p-values at the
+top of your results list.
+
+This is a lot of differentially expressed genes I will run through these
+really quickly and then rerun them with a more stringent alpha and an
+log2fold change cutoff added.
+
+```{r subset by padj}
+sum(res_SD_NoExtra_alph05$padj < 0.05, na.rm=TRUE) #13063 lowering the Padjusted value removed some of the genes
+res_SD_NE_D0_D14_padj_0.05 <- res_SD_NoExtra_alph05[which(res_SD_NoExtra_alph05$padj<0.05),]
+head(res_SD_NE_D0_D14_padj_0.05)
+sum(is.na(res_SD_NE_D0_D14_padj_0.05$padj))
+```
+
+
+
+This brought down the number of genes from Exploring and exporting
+results
+
+Generate an MA plot of your results using the plotMA function. What are
+the main components of this plot. What do the triangular points
+represent?
+
+```{r}
+head(res_SD_NE_D0_D14_padj_0.05)
+plotMA(res_SD_NE_D0_D14_padj_0.05, ylim=c(-4,4))
+```
+
+Example of most significantly altered genes
+```{r, echo=FALSE}
+plotCounts(DES_SD_NoExtra, gene=which.min(res_SD_NoExtra_alph05_anno$padj), intgroup="Time")
+```
+
+```{r Data transformations and visualization}
+library(vsn)
+#These transfrormed data are essentially the normalized counts table with the extreme bariability of 
+vsd_SD_NE_D014 <- vst(DES_SD_NoExtra, blind=TRUE)
+rld_SD_NE_D014 <- rlog(DES_SD_NoExtra, blind=T)
+head(assay(vsd_SD_NE_D014), 5)
+head(assay(rld_SD_NE_D014))#rld has more variability among the data genes which might be better for trajectory analysis.
+meanSdPlot(assay(vsd_SD_NE_D014))
+meanSdPlot(assay(rld_SD_NE_D014))
+vsd_SD_NE_D014_mat_normdata<- assay(vsd_SD_NE_D014)
+```
+```{r variance}
+#BiocManager::install("vsn")
+# this gives log2(n + 1)
+ntd_SD_NE_D014 <- normTransform(DES_SD_NoExtra)
+suppressPackageStartupMessages(library("vsn"))
+library(ggplot2)
+meanSdPlot(assay(ntd_SD_NE_D014)) + ggtitle("ntd normalized samples")
+```
+
+```{r Heatmap of the count matrix}
+suppressPackageStartupMessages(library("pheatmap"))
+select <- order(rowMeans(counts(DES_SD_NoExtra,normalized=TRUE)),
+                decreasing=TRUE)[1:20]
+
+df <- as.data.frame(colData(DES_SD_NoExtra)[,c("condition","Time")])
+pheatmap(assay(ntd_SD_NE_D014)[select,], cluster_rows=FALSE, show_rownames=FALSE,
+         cluster_cols=TRUE, annotation_col=df)
+```
+
+This is to see how similar the samples are
+#Visualization Results 
+The above work is all qualty control for the comparison of all of hte data. I will start looking at the differentially called genes for this comparison with  creating heatmaps of differentially expressed genes and then a chart of how they are being altered. 
+##Heatmap  
+
+```{r Significant normalized counts,eval= F}
+#All significant normalized counts table
+res_sig_SD_NE_order <-res_SD_NE_D0_D14_padj_0.05[order(res_SD_NE_D0_D14_padj_0.05$padj),]
+res_sig_SD_NE_normalized_counts <- assay(vsd_SD_NE_D014)[rownames(res_sig_SD_NE_order),] 
+res_sig_SD_NE_ntd_normalized_data <- assay(ntd_SD_NE_D014)[rownames(res_sig_SD_NE_order),] 
+res_sig_SD_NE_vst_normalized_data <- vsd_SD_NE_D014_mat_normdata[rownames(res_sig_SD_NE_order),] 
+##Significant in each wat tables
+res_sig_SD_NE_d014_down <-res_SD_NE_D0_D14_padj_0.05[which(res_SD_NE_D0_D14_padj_0.05$log2FoldChange<0),] 
+dim(res_sig_SD_NE_d014_down) #6521 6
+res_sig_SD_NE_d014_up <-res_SD_NE_D0_D14_padj_0.05[which(res_SD_NE_D0_D14_padj_0.05$log2FoldChange>0),]
+dim(res_sig_SD_NE_d014_up) #6542 6
+
+#Normalized counts table for up and down regulations
+res_sig_down_normalized_counts_SD_NE <- res_sig_SD_NE_vst_normalized_data[rownames(res_sig_SD_NE_d014_down),]
+res_sig_up_normalized_counts_SD_NE <- res_sig_SD_NE_vst_normalized_data[rownames(res_sig_SD_NE_d014_up),]
+        
+```
+##annotating the Data
+```{r Annotating Normalized data}
+suppressPackageStartupMessages(library("AnnotationDbi"))
+suppressPackageStartupMessages(library(org.Hs.eg.db))
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+library(EnsDb.Hsapiens.v86)
+edb <- EnsDb.Hsapiens.v86
+organism(edb)
+keytypes(edb)
+keys(edb,keytype = "GENEID")
+
+## Annotating Do d14 data significant table
+dim(res_sig_SD_NE_order)#Significant results day 0 to day 14 ordered by padj values the data rames has dimisions of 13013 6 
+res_sig_SD_NE_order_annoDbi <- data.frame(res_sig_SD_NE_order)
+res_sig_SD_NE_order_annoDbi$symbol<-                                                                                      mapIds(edb,keys=rownames(res_sig_SD_NE_order_annoDbi),column="SYMBOL",keytype="GENEID",multiVals="first")
+dim(res_sig_SD_NE_order_annoDbi) #13013 7 
+###Ananotate the VSD (normalized counts)tables#########
+vsd_SD_NE_D014_mat_normdata_annoDbi <- data.frame(vsd_SD_NE_D014_mat_normdata)
+vsd_SD_NE_D014_mat_normdata_annoDbi$symbol<-                                                                                      mapIds(edb,keys=rownames(vsd_SD_NE_D014_mat_normdata_annoDbi),column="SYMBOL",keytype="GENEID",multiVals="first")
+str(vsd_SD_NE_D014_mat_normdata_annoDbi) #23202 7 This method doesn't add the extra rows!
+
+
+##subset for significant genes###
+dim(res_SD_NE_D0_D14_padj_0.05)
+vsd_SD_NE_D014_mat_normdata_annoDbi_padj0.05 <- vsd_SD_NE_D014_mat_normdata_annoDbi[rownames(res_SD_NE_D0_D14_padj_0.05),]
+dim(vsd_SD_NE_D014_mat_normdata_annoDbi_padj0.05)
+
+median_SD_NoExtra_anno_vst <- data.frame(SD_NE_median_normcounts_df)  %>% rownames_to_column(var = "ensgene")
+#head(normalized_counts_SD_NoExtra_anno)
+dim(res_sig_SD_NE_normalized_counts) #13013 16 
+median_SD_NoExtra_anno_vst <- left_join(x= median_SD_NoExtra_anno_vst, y = grch38[,c("ensgene","symbol","description")], by ="ensgene")
+
+rownames(median_SD_NoExtra_anno_vst) <- median_SD_NoExtra_anno_vst$ensgene
+```
+
+```{r Saving Variables up to this point, eval= FALSE}
+save(list = c("cts_mat_SD_Noextra","l2fc_MSC0_SD_NE_df","l2fc_MSC0_SD_NE_df_anno","coldata_SD_Noextra","dds_SD_NoExtra","normalized_counts_SD_NoExtra","vsd_SD_NoExtra","vsd_mat_SD_NoExtra","vsd_cor_SD_NoExtra","DES_SD_NoExtra","res_SD_NoExtra","res_SD_NoExtra_alph05","res_SD_NoExtra_alph05_anno","res_SD_NE_D0_D14_padj_0.05","res_sig_SD_NE_order","res_sig_SD_NE_normalized_counts","res_sig_SD_NE_down","res_sig_SD_NE_up","res_sig_down_normalized_counts_SD_NE","res_sig_up_normalized_counts_SD_NE"),file = "~/Documents/Git/MSC_Bulk/RNA_seq_Data/SD_No_Extras.Rdata")
+```
+
+```{r Normalized significant genes Heatmaps}
+# Choose a color palette from RColorBrewer
+library(pheatmap)
+library(RColorBrewer)
+heat_colors <- brewer.pal(6,"YlOrRd")
+#display.brewer.all()
+
+head(res_sig_SD_NE_normalized_counts)
+sum(is.na(res_sig_SD_NE_normalized_counts))
+# Run pheatmap
+pheatmap(res_sig_SD_NE_vst_normalized_data,
+         color = heat_colors,
+         cluster_rows =T,
+         show_rownames =F,
+         annotation = select(coldata_SD_Noextra, Time),
+         scale ="row")
+
+pheatmap(res_sig_up_normalized_counts_SD_NE,
+         color = heat_colors,
+         cluster_rows =T,
+         show_rownames =F,
+         annotation = select(coldata_SD_Noextra, Time),
+         scale ="row")
+
+pheatmap(res_sig_down_normalized_counts_SD_NE,
+         color = heat_colors,
+         cluster_rows =T,
+         show_rownames =F,
+         annotation = select(coldata_SD_Noextra, Time),
+         scale ="row")
+```
+interestingly we see the MSCs segregate out, then the TBT samples all of them are next and then finally the rosiglitazone and control differentiation 
+#Top genes
+```{r top genes}
+library(annotables)
+
+top_50_SD_NE <- data.frame(res_sig_SD_NE_vst_normalized_data)[1:50,] %>% rownames_to_column(var ="ensgene")
+dim(top_50_SD_NE)
+top_50_SD_NE <- gather(top_50_SD_NE, key ="samplename", value ="normalized_counts",2:17)
+head(top_50_SD_NE)
+top_50_SD_NE<- inner_join(top_50_SD_NE,
+                     rownames_to_column(coldata_SD_Noextra, var ="samplename"),
+                     by ="samplename")
+
+#Annotating the genes with symbols
+top_50_SD_NE <- left_join(x = top_50_SD_NE,
+             y = grch38[,c("ensgene","symbol","description")],
+             by ="ensgene")
+
+ggplot(top_50_SD_NE)+
+  geom_point(aes(x = symbol, y = normalized_counts, color =Time))+
+  scale_y_log10()+
+  xlab("Genes")+
+  ylab("Normalized Counts")+
+  ggtitle("Top 50 Significant DE Genes Control differentiation")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle =45, hjust =1))+
+  theme(plot.title = element_text(hjust =0.5))
+####down Regulated####
+top_50_down <- data.frame(res_sig_down_normalized_counts_SD_NE)[1:50,] %>% rownames_to_column(var ="ensgene")
+dim(top_50_down)
+top_50_down <- gather(top_50_down, key ="samplename", value ="normalized_counts",2:17)
+head(top_50_down)
+top_50_down<- inner_join(top_50_down,
+                     rownames_to_column(coldata_SD_Noextra, var ="samplename"),
+                     by ="samplename")
+
+#Annotating the genes with symbols
+top_50_down <- left_join(x = top_50_down,
+             y = grch38[,c("ensgene","symbol","description")],
+             by ="ensgene")
+
+ggplot(top_50_down)+
+  geom_point(aes(x = symbol, y = normalized_counts, color = Time))+
+  scale_y_log10()+
+  xlab("Genes")+
+  ylab("Normalized Counts")+
+  ggtitle("Top 50 Significant DE Genes Day")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle =45, hjust =1))+
+  theme(plot.title = element_text(hjust =0.5))
+
+####up Regulated####
+top_50_up <- data.frame(res_sig_up_normalized_counts_SD_NE)[1:50,] %>% rownames_to_column(var ="ensgene")
+dim(top_50_up)
+top_50_up <- gather(top_50_up, key ="samplename", value ="normalized_counts",2:17)
+head(top_50_up)
+top_50_up<- inner_join(top_50_up,
+                     rownames_to_column(coldata_SD_Noextra, var ="samplename"),
+                     by ="samplename")
+
+#Annotating the genes with symbols
+top_50_up <- left_join(x = top_50_up,
+             y = grch38[,c("ensgene","symbol","description")],
+             by ="ensgene")
+
+ggplot(top_50_up)+
+  geom_point(aes(x = symbol, y = normalized_counts, color = Time))+
+  scale_y_log10()+
+  xlab("Genes")+
+  ylab("Normalized Counts")+
+  ggtitle("Top 50 up Significant DE Genes Day")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle =45, hjust =1))+
+  theme(plot.title = element_text(hjust =0.5))
+###Subset the TFs that are significant in the Top DEG for D014####
+dim(res_SD_NoExtra_alph05)
+res_SD_NoExtra_D014_anno <- res_SD_NoExtra_alph05_anno[which(res_SD_NoExtra_alph05_anno$padj<0.05),]
+dim(res_SD_NoExtra_D014_anno)
+res_SD_NoExtra_D014_anno <- res_SD_NoExtra_D014_anno[-which(is.na(res_SD_NoExtra_D014_anno$symbol)),] # remove NAs
+dim(res_SD_NoExtra_D014_anno)#13091
+
+res_SD_NoExtra_D014_TF <- res_SD_NoExtra_D014_anno[grep(pattern="transcription", res_SD_NoExtra_D014_anno$description),]
+head(res_SD_NoExtra_D014_TF)
+SD_NE_D014_TFs <- res_SD_NoExtra_D014_TF$symbol
+head(SD_NE_D014_TFs)
+
+```
+###Volcano Plot of up anddiown regulated genes
+```{r Volcano Plots for D0 D14}
+library(ggrepel)
+res_SD_D0_D14_all <- data.frame(res_SD_NoExtra_alph05) %>% mutate(threshold = padj < 0.05)
+
+#Creating Volcano plot based on threshold of padjusted bvvalues
+ggplot(res_SD_D0_D14_all)+
+  geom_point(aes(x = log2FoldChange, y = -log10(padj), color = threshold))+
+  xlab("log2 fold change")+
+  ylab("-log10 adjusted p-value")+
+  geom_vline(xintercept=c(-0.6, 0.6), col="red") +
+  geom_hline(yintercept=-log10(0.05), col="red")+
+  theme(legend.position ="none",
+        plot.title = element_text(size = rel(1.5), hjust =0.5),
+        axis.title = element_text(size = rel(1.25)))
+# creating differenitally expressed category
+res_SD_D0_D14_all$diffexpressed <- "NO"
+# if log2Foldchange > 0.6 and pvalue < 0.05, set as "UP" 
+res_SD_D0_D14_all$diffexpressed[res_SD_D0_D14_all$log2FoldChange > 1 & res_SD_D0_D14_all$padj < 0.05] <- "UP"
+# if log2Foldchange < -0.6 and pvalue < 0.05, set as "DOWN"
+res_SD_D0_D14_all$diffexpressed[res_SD_D0_D14_all$log2FoldChange < -1 & res_SD_D0_D14_all$padj < 0.05] <- "DOWN"
+sum(res_SD_D0_D14_all$diffexpressed=="UP") #2954 up regulated genes
+sum(res_SD_D0_D14_all$diffexpressed=="DOWN")#3325 down regulated genes
+#trying chaning the color based on the diffexpressed column  just added
+
+p <- ggplot(res_SD_D0_D14_all)+
+  geom_point(aes(x = log2FoldChange, y = -log10(padj), color = diffexpressed))+
+  xlab("log2 fold change")+
+  ylab("-log10 adjusted p-value")+
+  geom_vline(xintercept=c(-0.6, 0.6), col="red") +
+  geom_hline(yintercept=-log10(0.05), col="red")+
+  theme(legend.position ="right",
+        plot.title = element_text(size = rel(1.5), hjust =0.5),
+        axis.title = element_text(size = rel(1.25)))
+p
+##changing the colors 
+mycolors <- c("blue", "red", "black")
+names(mycolors) <- c("DOWN", "UP", "NO")
+p2 <- p + scale_colour_manual(values = mycolors)
+p2
+
+#Try the enhanced volcano plot with 
+#this is the test code from the website
+head(res_SD_NoExtra_alph05_anno)#day 014 comparision annotated
+res_SD_NoExtra_alph05_anno <- res_SD_NoExtra_alph05_anno[order(res_SD_NoExtra_alph05_anno$padj),]
+EnhancedVolcano(res_SD_NoExtra_alph05_anno,
+    lab = res_SD_NoExtra_alph05_anno$symbol,
+     selectLab = c('PDK4','ADIPOQ','FABP4',
+      'FABP3','NR1H3','RBL1','LEP','LPL','MAOA','NRIP1','TSPAN6','FGR','PLIN1','IGFBP6','INSULIN'),
+    x = 'log2FoldChange',
+    y = 'padj',
+    pCutoff = 10e-22,
+    FCcutoff = 2,
+    cutoffLineType = 'twodash',
+    cutoffLineWidth = 0.8,
+    pointSize = 2.0,
+    #labSize = 2.0,
+    title = "SD_D014_DEGs",
+    colAlpha = 1,
+    legendLabels=c('Not sig.','Log (base 2) FC','p-value',
+      'p-value & Log (base 2) FC'),
+    legendPosition = 'right',
+    legendLabSize = 8,
+    legendIconSize = 5.0)
+```
+##Plot Time Regressed
+```{r Time}
+SD_Time <- plotCounts(DES_SD_NoExtra, which.min(res_SD_NoExtra$padj), 
+                   intgroup = c("Day","condition"), returnData = TRUE)
+#results(res_SD_NoExtra)
+res_SD_NoExtra
+SD_Time$Day <- as.numeric(as.character(SD_Time$Day))
+ggplot(SD_Time,
+  aes(x = Day, y = count, color = condition, group = condition)) + 
+  geom_point() + stat_summary(fun.y=mean, geom="line") +
+  scale_y_log10()
+```
+
+### GSEA Day 0 to day 14 VST normed data
+```{r GSEA}
+
+######Run Kegg on the #############
+library(clusterProfiler)
+library(enrichplot)
+library(org.Hs.eg.db)
+library(ggplot2)
+library(rrvgo)
+# we use ggplot2 to add x axis labels (ex: ridgeplot)
+
+head(res_sig_SD_NE_order_annoDbi)#annotated results from the vsd dataset
+res_sig_SD_NE_order_lfc0.5_annoDbi <- res_sig_SD_NE_order_annoDbi[which(abs(res_sig_SD_NE_order_annoDbi$log2FoldChange)>0.5),]
+
+SD_lfc_0.5_D014 <- res_sig_SD_NE_order_lfc0.5_annoDbi$log2FoldChange
+names(SD_lfc_0.5_D014) <- res_sig_SD_NE_order_lfc0.5_annoDbi$symbol
+SD_lfc_0.5_D014<-na.omit(SD_lfc_0.5_D014)
+# sort the list in decreasing order (required for clusterProfiler)
+SD_lfc_0.5_D014 = sort(SD_lfc_0.5_D014, decreasing = TRUE)
+keytypes(org.Hs.eg.db)
+head(SD_lfc_0.5_D014)
+#gene set enrichment
+gse_SD_NE_D014 <- gseGO(geneList=SD_lfc_0.5_D014, 
+             ont ="ALL", 
+             keyType = "SYMBOL", 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = org.Hs.eg.db, 
+             pAdjustMethod = "none")
+gse_SD_NE_D014
+
+dotplot(gse_SD_NE_D014,showCategory=10) + ggtitle("GSEA standard Diff Day 0 to day 14")
+#### Reduce clusters######
+library(rrvgo)
+simMatrix_SD_NE_D014 <- calculateSimMatrix(gse_SD_NE_D014@result$ID, orgdb="org.Hs.eg.db",
+                                ont="BP",
+                                method="Rel")
+
+scores_simmatrix_SD_NE_D014 <- setNames(-log10(gse_SD_NE_D014@result$qvalues), gse_SD_NE_D014@result$ID)
+reducedTerms_SD_NE_D014 <- reduceSimMatrix(simMatrix_SD_NE_D014, scores_simmatrix_SD_NE_D014, threshold = 0.7, orgdb = "org.Hs.eg.db")
+heatmapPlot(simMatrix_SD_NE_D014,reducedTerms_SD_NE_D014,annotateParent = T,annotationLabel = "parentTerm",fontsize= 6) # this is super noisy
+scatterPlot(simMatrix_SD_NE_D014,reducedTerms_SD_NE_D014)
+treemapPlot(reducedTerms_SD_NE_D014)
+
+```
+
+##K- means clustering
+```{r K means clustering}
+library(tidyverse)
+library(cluster)
+library(factoextra)
+library(ComplexHeatmap)
+library(AnnotationDbi)
+library(annotables)
+options(future.globals.maxSize = 4000 * 1024^2)
+#######################K means with data normalized to day 0 ###############################
+# res_sig_SD_NE_vst_normalized_data
+# head(l2fc_MSC0_SD_NE_df)
+# head(l2fc_MSC0_SD_NE_df_anno)
+# ###subset l2fc_SD_NE to DEGs
+# dim(res_SD_NoExtra_D014_anno)#13091 10 Day 0 day 14 contrast with padj <0.05
+# dim(res_SD_NE_D0_D3_padj0.05_anno_ordered)#12686 thee are the significant results from Day 3 day 0 contrast
+##### normt o day 0 data prep########
+# l2fc_MSC0_SD_NE_D014_DEGsubset <- data.frame(na.omit(l2fc_MSC0_SD_NE_df_anno[which(l2fc_MSC0_SD_NE_df_anno$symbol %in% res_SD_NoExtra_D014_anno$symbol),]))
+# dim(l2fc_MSC0_SD_NE_D014_DEGsubset) #12747 8 
+# l2fc_MSC0_SD_NE_D014_DEGsubset <- l2fc_MSC0_SD_NE_D014_DEGsubset[-which(duplicated(l2fc_MSC0_SD_NE_D014_DEGsubset$symbol)),] # remove duplicated rows
+# rownames(l2fc_MSC0_SD_NE_D014_DEGsubset) <- l2fc_MSC0_SD_NE_D014_DEGsubset$symbol # name the rows by the symbol
+# 
+# df_l2fc_MSC0_SD_NE_D014_DEGsubset <- l2fc_MSC0_SD_NE_D014_DEGsubset[,c(2:6)]
+# df_l2fc_MSC0_SD_NE_D014_DEGsubset <- df_l2fc_MSC0_SD_NE_D014_DEGsubset[-which(is.infinite(rowSums(df_l2fc_MSC0_SD_NE_D014_DEGsubset))),]#remove rows with value of infinity There were a few interesting genes here like wnt2 
+
+######distance check
+# distance <- get_dist(df_l2fc_MSC0_SD_NE_D014_DEGsubset)
+# fviz_dist(distance, gradient = list(low = "#00AFBB", mid = "white", high = "#FC4E07"))# Memory exhausted
+# set.seed(123)
+# 
+# fviz_nbclust(df_l2fc_MSC0_SD_NE_D014_DEGsubset, kmeans, method = "wss")
+# set.seed(123)
+# 
+# fviz_nbclust(df_l2fc_MSC0_SD_NE_D014_DEGsubset, kmeans, method = "silhouette")
+# #@ cluster attempt
+# k2 <- kmeans(df_l2fc_MSC0_SD_NE_D014_DEGsubset, centers = 2, nstart = 25)
+# str(k2)
+k2
+
+
+##################### Run k means for only significant genes day 0 to day 14 contrast###########################
+#Data set to use: SD_NE_median_normcounts_df which is from res_sig_SD_NE_vst_normalized_data
+##If this is too exaustive I will limit the data to the samples that havea padj or less than 0.05 from  the res_sig_SD_NE_normalized_counts variable
+
+##K means runing on normalized results from DEseq2
+####data prep
+
+dim(vsd_SD_NE_D014_mat_normdata)#23202 16 
+dim(res_sig_SD_NE_vst_normalized_data)#13063 16 This is just the significant subset of the vsd normaliszed counts
+#distance check
+distance <- get_dist(vsd_SD_NE_D014_mat_normdata)
+fviz_dist(distance, gradient = list(low = "#00AFBB", mid = "white", high = "#FC4E07"))
+vst_SD_d014_scaled<- t(scale(t(res_sig_SD_NE_vst_normalized_data)))
+set.seed(123)
+
+fviz_nbclust(vst_SD_d014_scaled, kmeans, method = "wss")
+
+set.seed(123)
+fviz_nbclust(vst_SD_d014_scaled, kmeans, method = "silhouette")
+
+#Increasing clusters
+###k6####
+set.seed(123)
+k6_vst_SD_d014 <- kmeans(vst_SD_d014_scaled, centers = 6, nstart = 25)
+k6_vst_SD_d014_mat <- cbind(vst_SD_d014_scaled,k6_vst_SD_d014$cluster)
+ord <- order(k6_vst_SD_d014_mat[,17])
+k6_vst_SD_d014_mat <- k6_vst_SD_d014_mat[ord,]
+rowanno <- data.frame(Clusters= factor(k6_vst_SD_d014_mat[,17]))
+kcolors <-met.brewer(name = "OKeeffe1",n = 6,type = 'discrete')
+length(kcolors)
+names(kcolors) <- unique(rowanno$Clusters)
+
+pheatmap(k6_vst_SD_d014_mat[,1:16],
+         cluster_rows = F,
+         cluster_cols = F,
+         border_color = NA,
+         show_colnames = T,
+         show_rownames = F,
+         annotation_row = rowanno)
+k6_vst_SD_d014_centers <- k6_vst_SD_d014$centers
+k6_vst_centers_df <- data.frame(k6_vst_SD_d014$centers, group= c(1:6))
+ggparcoord(k6_vst_centers_df, columns = 1:16, groupColumn = 'group') + facet_wrap(~group, nrow = 5)
+k6_vst_SD_d014$size
+k6_vst_SD_centers_medians <- data.frame(A=rowMedians(k6_vst_SD_d014_centers[,1:3]),B=rowMedians(k6_vst_SD_d014_centers[,4:6]),C=rowMedians(k6_vst_SD_d014_centers[,7:6]),D=rowMedians(k6_vst_SD_d014_centers[,11:13]),E=rowMedians(k6_vst_SD_d014_centers[,14:16]),group = c(1:6))
+library(hrbrthemes)
+library(GGally)
+library(viridis)
+ggparcoord(k6_vst_centers_medians, columns = 1:5, groupColumn = 'group', showPoints = T, title = "k6 vst scaling") 
+ggparcoord(k6_vst_centers_medians, columns = 1:5, groupColumn = 'group', showPoints = T, title = "k6 vst scaling")+ facet_wrap(~group)
+
+### Subsetting gene sets for cluster 6 #####
+genes_vst_d014_k6_c1 <- names(k6_vst_SD_d014$cluster)[which(k6_vst_SD_d014$cluster==1)]
+genes_vst_d014_k6_c2 <- names(k6_vst_SD_d014$cluster)[which(k6_vst_SD_d014$cluster==2)]
+genes_vst_d014_k6_c3 <- names(k6_vst_SD_d014$cluster)[which(k6_vst_SD_d014$cluster==3)]
+genes_vst_d014_k6_c4 <- names(k6_vst_SD_d014$cluster)[which(k6_vst_SD_d014$cluster==4)]
+genes_vst_d014_k6_c5 <- names(k6_vst_SD_d014$cluster)[which(k6_vst_SD_d014$cluster==5)]
+genes_vst_d014_k6_c6 <- names(k6_vst_SD_d014$cluster)[which(k6_vst_SD_d014$cluster==6)]
+
+```
+###Annotating  K-means 6 gtene subsets
+```{rk-means 6 clustes annotation}
+library(annotables)
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+library(EnsDb.Hsapiens.v86)
+library(AnnotationDbi)
+edb<- EnsDb.Hsapiens.v86
+genes_vst_d014_k6_c1 <- data.frame(row.names = genes_vst_d014_k6_c1) 
+genes_vst_d014_k6_c1$symbol= mapIds(edb,keys=rownames(genes_vst_d014_k6_c1),                                          column="SYMBOL",keytype="GENEID",multiVals="first")
+# Cluster 1 has LEP, IGF2, PDK4, KLF15, IGF1
+
+genes_vst_d014_k6_c2<- data.frame(row.names = genes_vst_d014_k6_c2)
+genes_vst_d014_k6_c2$symbol= mapIds(edb,keys=rownames(genes_vst_d014_k6_c2),                                          column="SYMBOL",keytype="GENEID",multiVals="first")
+genes_vst_d014_k6_c3<- data.frame(row.names = genes_vst_d014_k6_c3)
+genes_vst_d014_k6_c3$symbol= mapIds(edb,keys=rownames(genes_vst_d014_k6_c3),                                          column="SYMBOL",keytype="GENEID",multiVals="first")
+genes_vst_d014_k6_c4<- data.frame(row.names = genes_vst_d014_k6_c4)
+genes_vst_d014_k6_c4$symbol= mapIds(edb,keys=rownames(genes_vst_d014_k6_c4),                                          column="SYMBOL",keytype="GENEID",multiVals="first")
+#Number 4 has ADIPOQ, PLIN4, ACACB,AQP7,IGFBP5,LPL,FABP5,IGFBP2,CLCC1,MED1,FGFR1,LIPA,UBOX5,CEBPB-AS1,FABP4, PCK1,ANGP1,ABCD2,MAOA AND MORE
+genes_vst_d014_k6_c5<- data.frame(row.names = genes_vst_d014_k6_c5)
+genes_vst_d014_k6_c5$symbol= mapIds(edb,keys=rownames(genes_vst_d014_k6_c5),                                          column="SYMBOL",keytype="GENEID",multiVals="first")
+genes_vst_d014_k6_c6<- data.frame(row.names = genes_vst_d014_k6_c6)
+genes_vst_d014_k6_c6$symbol= mapIds(edb,keys=rownames(genes_vst_d014_k6_c6),                                          column="SYMBOL",keytype="GENEID",multiVals="first")
+View(genes_vst_d014_k6_c1)
+View(genes_vst_d014_k6_c2)
+View(genes_vst_d014_k6_c3)
+SD_Kmeans_genelist <- list(SD_D014_cluster1 = genes_vst_d014_k6_c1,SD_D014_cluster2 = genes_vst_d014_k6_c2,SD_D014_cluster3 = genes_vst_d014_k6_c3, SD_D014_cluster4 = genes_vst_d014_k6_c3,SD_D014_cluster4 = genes_vst_d014_k6_c4,SD_D014_cluster5 = genes_vst_d014_k6_c5,SD_D014_cluster6 = genes_vst_d014_k6_c6)
+View(SD_D014_k6_c1)
+View(SD_D014_k6_c2)
+View(SD_D014_k6_c3)
+View(SD_D014_k6_c4)
+View(SD_D014_k6_c5)
+View(SD_D014_k6_c6)
+
+save(list = c("genes_vst_d014_k6_c1","genes_vst_d014_k6_c2","genes_vst_d014_k6_c3","genes_vst_d014_k6_c4","genes_vst_d014_k6_c5","genes_vst_d014_k6_c6"),file = "./RNA_seq_Data/K_means_Results/Genes_K6_D014.RData")
+# #SD 
+# res_SD_NoExtra_D03_a05_annoDbi <- data.frame(res_SD_NoExtra_D03_a05)
+# res_SD_NoExtra_D03_a05_annoDbi$symbol<-                                                                                  mapIds(edb,keys=rownames(res_SD_NoExtra_D03_a05_annoDbi),                                          column="SYMBOL",keytype="GENEID",multiVals="first")
+
+```
+```{r Analyzing k-means}
+######Run Kegg on the clusters#############
+library(clusterProfiler)
+library(enrichplot)
+library(org.Hs.eg.db)
+library(ggplot2)
+library(rrvgo)
+
+head(res_sig_SD_NE_order_annoDbi)#annotated results from the vsd dataset
+head(SD_lfc_0.5_D014)
+
+#####Kegg K6 SD D014 C1 ############
+dim(genes_vst_d014_k6_c1)
+SD_D014_k6_c1 <- res_sig_SD_NE_order_annoDbi[which(rownames(res_sig_SD_NE_order_annoDbi) %in% rownames(genes_vst_d014_k6_c1)),]
+
+SD_lfc_D014_k6_c1 <- SD_D014_k6_c1$log2FoldChange
+names(SD_lfc_D014_k6_c1) <- SD_D014_k6_c1$symbol
+SD_lfc_D014_k6_c1<-na.omit(SD_lfc_D014_k6_c1)
+# sort the list in decreasing order (required for clusterProfiler)
+SD_lfc_D014_k6_c1 = sort(SD_lfc_D014_k6_c1, decreasing = TRUE)
+keytypes(org.Hs.eg.db)
+head(SD_lfc_D014_k6_c1)
+
+length(SD_lfc_D014_k6_c1)#2479
+#gene set enrichment
+gse_SD_NE_D014_k6_c1 <- gseGO(geneList=SD_lfc_D014_k6_c1, 
+             ont ="BP", 
+             keyType = "SYMBOL", 
+             minGSSize = 10, 
+             maxGSSize = 1000, 
+             nPermSimple = 10000,
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = org.Hs.eg.db, 
+             pAdjustMethod = "none")
+gse_SD_NE_D014_k6_c1
+
+gse_SD_NE_D014_k6_c1_filter10 <- gsfilter(gse_SD_NE_D014_k6_c1, by = 'setSize', min = 10)
+View(enrichGO_test_filter10@result)
+dotplot(gse_SD_NE_D014_k6_c1,showCategory=10) + ggtitle("GSEA standard Diff Day 0 to day 14 K6 cluster 1 ")
+require(DOSE)
+dotplot(gse_SD_NE_D014_k6_c1, showCategory=20, split=".sign") + facet_grid(.~.sign)
+gse_SD_NE_D014_k6_c1@result$Description
+
+#### reduding GO complexity clusters######
+
+library(rrvgo)
+simMatrix_SD_NE_D014_k6_c1 <- calculateSimMatrix(gse_SD_NE_D014_k6_c1@result$ID, orgdb="org.Hs.eg.db",
+                                ont="BP",
+                                method="Rel")
+scores_simmatrix_SD_NE_D014_k6_c1 <- setNames(-log10(gse_SD_NE_D014_k6_c1@result$qvalues), gse_SD_NE_D014_k6_c1@result$ID)
+reducedTerms_SD_NE_D014_k6_c1 <- reduceSimMatrix(simMatrix_SD_NE_D014_k6_c1, scores_simmatrix_SD_NE_D014_k6_c1, threshold = 0.7, orgdb = "org.Hs.eg.db")
+#heatmapPlot(simMatrix_SD_NE_D014_k6_c1,reducedTerms_SD_NE_D014_k6_c1,annotateParent = T,annotationLabel = "parentTerm",fontsize= 6) # this is super noisy
+scatterPlot(simMatrix_SD_NE_D014_k6_c1,reducedTerms_SD_NE_D014_k6_c1)
+treemapPlot(reducedTerms_SD_NE_D014_k6_c1,title = "GSEA Standard Differentiation K6 cluster1 (increased by day 3)")
+
+
+###### Kegg K6 SD d014 C2 ########
+SD_D014_k6_c2 <- res_sig_SD_NE_order_annoDbi[which(rownames(res_sig_SD_NE_order_annoDbi) %in% rownames(genes_vst_d014_k6_c2)),]
+
+SD_lfc_D014_k6_c2 <- SD_D014_k6_c2$log2FoldChange
+names(SD_lfc_D014_k6_c2) <- SD_D014_k6_c2$symbol
+SD_lfc_D014_k6_c2<-na.omit(SD_lfc_D014_k6_c2)
+# sort the list in decreasing order (required for clusterProfiler)
+SD_lfc_D014_k6_c2 = sort(SD_lfc_D014_k6_c2, decreasing = T)
+keytypes(org.Hs.eg.db)
+head(SD_lfc_D014_k6_c2)
+#gene set enrichment
+gse_SD_NE_D014_k6_c2 <- gseGO(geneList=SD_lfc_D014_k6_c2, 
+             ont ="BP", 
+             keyType = "SYMBOL", 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = org.Hs.eg.db, 
+             pAdjustMethod = "none")
+
+gse_SD_NE_D014_k6_c2
+
+dotplot(gse_SD_NE_D014_k6_c2,showCategory=10) + ggtitle("GSEA standard Diff Day 0 to day 14 K6 cluster 2")
+dotplot(gse_SD_NE_D014_k6_c2,showCategory=18) + ggtitle("GSEA standard Diff Day 0 to day 14 K6 cluster 2")
+dotplot(gse_SD_NE_D014_k6_c2, showCategory=20, split=".sign") + facet_grid(.~.sign)
+View(gse_SD_NE_D014_k6_c2@result[1:30,])
+#### reducing GO complexity clusters######
+
+library(rrvgo)
+simMatrix_SD_NE_D014_k6_c2 <- calculateSimMatrix(gse_SD_NE_D014_k6_c2@result$ID, orgdb="org.Hs.eg.db",
+                                ont="BP",
+                                method="Rel")
+scores_simmatrix_SD_NE_D014_k6_c2 <- setNames(-log10(gse_SD_NE_D014_k6_c2@result$qvalues), gse_SD_NE_D014_k6_c2@result$ID)
+reducedTerms_SD_NE_D014_k6_c2 <- reduceSimMatrix(simMatrix_SD_NE_D014_k6_c2, scores_simmatrix_SD_NE_D014_k6_c2, threshold = 0.7, orgdb = "org.Hs.eg.db")
+#heatmapPlot(simMatrix_SD_NE_D014_k6_c2,reducedTerms_SD_NE_D014_k6_c2,annotateParent = T,annotationLabel = "parentTerm",fontsize= 6) # this is super noisy
+scatterPlot(simMatrix_SD_NE_D014_k6_c2,reducedTerms_SD_NE_D014_k6_c2)
+treemapPlot(reducedTerms_SD_NE_D014_k6_c2,title = "GSEA Standard Differentiation K6 cluster2(decreased by day 3)")
+
+#####Kegg K6 SD D014 c3 ############
+SD_D014_k6_c3 <- res_sig_SD_NE_order_annoDbi[which(rownames(res_sig_SD_NE_order_annoDbi) %in% rownames(genes_vst_d014_k6_c3)),]
+
+SD_lfc_D014_k6_c3 <- SD_D014_k6_c3$log2FoldChange
+names(SD_lfc_D014_k6_c3) <- SD_D014_k6_c3$symbol
+SD_lfc_D014_k6_c3<-na.omit(SD_lfc_D014_k6_c3)
+# sort the list in decreasing order (required for clusterProfiler)
+SD_lfc_D014_k6_c3 = sort(SD_lfc_D014_k6_c3, decreasing = TRUE)
+keytypes(org.Hs.eg.db)
+head(SD_lfc_D014_k6_c3)
+#gene set enrichment
+gse_SD_NE_D014_k6_c3 <- gseGO(geneList=SD_lfc_D014_k6_c3, 
+             ont ="BP", 
+             keyType = "SYMBOL", 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = org.Hs.eg.db, 
+             pAdjustMethod = "none")
+gse_SD_NE_D014_k6_c3
+
+dotplot(gse_SD_NE_D014_k6_c3,showCategory=10) + ggtitle("GSEA standard Diff Day 0 to day 14 K6 cluster 3")
+dotplot(gse_SD_NE_D014_k6_c3,showCategory=18) + ggtitle("GSEA standard Diff Day 0 to day 14 K6 cluster 3")
+dotplot(gse_SD_NE_D014_k6_c3,showCategory=20,split = ".sign") + facet_grid(.~.sign)
+View(gse_SD_NE_D014_k6_c3@result[1:30,])
+#### reduding GO complexity clusters######
+
+library(rrvgo)
+simMatrix_SD_NE_D014_k6_c3 <- calculateSimMatrix(gse_SD_NE_D014_k6_c3@result$ID, orgdb="org.Hs.eg.db",
+                                ont="BP",
+                                method="Rel")
+scores_simmatrix_SD_NE_D014_k6_c3 <- setNames(-log10(gse_SD_NE_D014_k6_c3@result$qvalues), gse_SD_NE_D014_k6_c3@result$ID)
+reducedTerms_SD_NE_D014_k6_c3 <- reduceSimMatrix(simMatrix_SD_NE_D014_k6_c3, scores_simmatrix_SD_NE_D014_k6_c3, threshold = 0.7, orgdb = "org.Hs.eg.db")
+#heatmapPlot(simMatrix_SD_NE_D014_k6_c3,reducedTerms_SD_NE_D014_k6_c3,annotateParent = T,annotationLabel = "parentTerm",fontsize= 6) # this is super noisy
+scatterPlot(simMatrix_SD_NE_D014_k6_c3,reducedTerms_SD_NE_D014_k6_c3,labelSize = 2) 
+treemapPlot(reducedTerms_SD_NE_D014_k6_c3,title = "GSEA Standard Differentiation K6 cluster3 (slow increased by day 3-14)")
+
+#####Kegg K6 SD D014 c4 ############
+SD_D014_k6_c4 <- res_sig_SD_NE_order_annoDbi[which(rownames(res_sig_SD_NE_order_annoDbi) %in% rownames(genes_vst_d014_k6_c4)),]
+
+SD_lfc_D014_k6_c4 <- SD_D014_k6_c4$log2FoldChange
+names(SD_lfc_D014_k6_c4) <- SD_D014_k6_c4$symbol
+SD_lfc_D014_k6_c4<-na.omit(SD_lfc_D014_k6_c4)
+# sort the list in decreasing order (required for clusterProfiler)
+SD_lfc_D014_k6_c4 = sort(SD_lfc_D014_k6_c4, decreasing = TRUE)
+keytypes(org.Hs.eg.db)
+head(SD_lfc_D014_k6_c4)
+#gene set enrichment
+gse_SD_NE_D014_k6_c4 <- gseGO(geneList=SD_lfc_D014_k6_c4, 
+             ont ="BP", 
+             keyType = "SYMBOL", 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = org.Hs.eg.db, 
+             pAdjustMethod = "none")
+gse_SD_NE_D014_k6_c4
+
+dotplot(gse_SD_NE_D014_k6_c4,showCategory=15) + ggtitle("GSEA standard Diff Day 0 to day 14 K6 cluster 4")
+dotplot(gse_SD_NE_D014_k6_c4,showCategory=12, split=".sign") + facet_grid(.~.sign) # shows lipipd metabolism
+#### reduding GO complexity clusters######
+
+library(rrvgo)
+simMatrix_SD_NE_D014_k6_c4 <- calculateSimMatrix(gse_SD_NE_D014_k6_c4@result$ID, orgdb="org.Hs.eg.db",
+                                ont="BP",
+                                method="Rel")
+scores_simmatrix_SD_NE_D014_k6_c4 <- setNames(-log10(gse_SD_NE_D014_k6_c4@result$qvalues), gse_SD_NE_D014_k6_c4@result$ID)
+reducedTerms_SD_NE_D014_k6_c4 <- reduceSimMatrix(simMatrix_SD_NE_D014_k6_c4, scores_simmatrix_SD_NE_D014_k6_c4, threshold = 0.7, orgdb = "org.Hs.eg.db")
+#heatmapPlot(simMatrix_SD_NE_D014_k6_c4,reducedTerms_SD_NE_D014_k6_c4,annotateParent = T,annotationLabel = "parentTerm",fontsize= 6) # this is super noisy
+scatterPlot(simMatrix_SD_NE_D014_k6_c4,reducedTerms_SD_NE_D014_k6_c4)
+treemapPlot(reducedTerms_SD_NE_D014_k6_c4,title = "GSEA Standard Differentiation K6 cluster4 (late increased by day 10-14)")
+
+#####Kegg K6 SD D014 c5 ############
+SD_D014_k6_c5 <- res_sig_SD_NE_order_annoDbi[which(rownames(res_sig_SD_NE_order_annoDbi) %in% rownames(genes_vst_d014_k6_c5)),]
+
+SD_lfc_D014_k6_c5 <- SD_D014_k6_c5$log2FoldChange
+names(SD_lfc_D014_k6_c5) <- SD_D014_k6_c5$symbol
+SD_lfc_D014_k6_c5<-na.omit(SD_lfc_D014_k6_c5)
+# sort the list in decreasing order (required for clusterProfiler)
+SD_lfc_D014_k6_c5 = sort(SD_lfc_D014_k6_c5, decreasing = TRUE)
+keytypes(org.Hs.eg.db)
+head(SD_lfc_D014_k6_c5)
+#gene set enrichment
+gse_SD_NE_D014_k6_c5 <- gseGO(geneList=SD_lfc_D014_k6_c5, 
+             ont ="ALL", 
+             keyType = "SYMBOL", 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = org.Hs.eg.db, 
+             pAdjustMethod = "none")
+gse_SD_NE_D014_k6_c5
+
+dotplot(gse_SD_NE_D014_k6_c5,showCategory=10) + ggtitle("GSEA standard Diff Day 0 to day 14 K6 cluster 5")
+dotplot(gse_SD_NE_D014_k6_c5,showCategory=10) + ggtitle("GSEA standard Diff Day 0 to day 14 K6 cluster 5")
+dotplot(gse_SD_NE_D014_k6_c5,showCategory=12, split=".sign") + facet_grid(.~.sign)
+#### reduding GO complexity clusters######
+
+library(rrvgo)
+simMatrix_SD_NE_D014_k6_c5 <- calculateSimMatrix(gse_SD_NE_D014_k6_c5@result$ID, orgdb="org.Hs.eg.db",
+                                ont="BP",
+                                method="Rel")
+scores_simmatrix_SD_NE_D014_k6_c5 <- setNames(-log10(gse_SD_NE_D014_k6_c5@result$qvalues), gse_SD_NE_D014_k6_c5@result$ID)
+reducedTerms_SD_NE_D014_k6_c5 <- reduceSimMatrix(simMatrix_SD_NE_D014_k6_c5, scores_simmatrix_SD_NE_D014_k6_c5, threshold = 0.7, orgdb = "org.Hs.eg.db")
+#heatmapPlot(simMatrix_SD_NE_D014_k6_c5,reducedTerms_SD_NE_D014_k6_c5,annotateParent = T,annotationLabel = "parentTerm",fontsize= 6) # this is super noisy
+scatterPlot(simMatrix_SD_NE_D014_k6_c5,reducedTerms_SD_NE_D014_k6_c5)
+treemapPlot(reducedTerms_SD_NE_D014_k6_c5)
+
+#####Kegg K6 SD D014 c6 ############
+SD_D014_k6_c6 <- res_sig_SD_NE_order_annoDbi[which(rownames(res_sig_SD_NE_order_annoDbi) %in% rownames(genes_vst_d014_k6_c6)),]
+
+SD_lfc_D014_k6_c6 <- SD_D014_k6_c6$log2FoldChange
+names(SD_lfc_D014_k6_c6) <- SD_D014_k6_c6$symbol
+SD_lfc_D014_k6_c6<-na.omit(SD_lfc_D014_k6_c6)
+# sort the list in decreasing order (required for clusterProfiler)
+SD_lfc_D014_k6_c6 = sort(SD_lfc_D014_k6_c6, decreasing = TRUE)
+keytypes(org.Hs.eg.db)
+head(SD_lfc_D014_k6_c6)
+#gene set enrichment
+gse_SD_NE_D014_k6_c6 <- gseGO(geneList=SD_lfc_D014_k6_c6, 
+             ont ="ALL", 
+             keyType = "SYMBOL", 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = org.Hs.eg.db, 
+             pAdjustMethod = "none")
+gse_SD_NE_D014_k6_c6
+
+dotplot(gse_SD_NE_D014_k6_c6,showCategory=10) + ggtitle("GSEA standard Diff Day 0 to day 14 K6 cluster 6")
+dotplot(gse_SD_NE_D014_k6_c6,showCategory=15) + ggtitle("GSEA standard Diff Day 0 to day 14 K6 cluster 6")
+dotplot(gse_SD_NE_D014_k6_c6,showCategory=10,split=".sign") +facet_grid(.~.sign)+ ggtitle("GSEA standard Diff Day 0 to day 14 K6 cluster 6")
+#### reduding GO complexity clusters######
+
+library(rrvgo)
+simMatrix_SD_NE_D014_k6_c6 <- calculateSimMatrix(gse_SD_NE_D014_k6_c6@result$ID, orgdb="org.Hs.eg.db",
+                                ont="BP",
+                                method="Rel")
+scores_simmatrix_SD_NE_D014_k6_c6 <- setNames(-log10(gse_SD_NE_D014_k6_c6@result$qvalues), gse_SD_NE_D014_k6_c6@result$ID)
+reducedTerms_SD_NE_D014_k6_c6 <- reduceSimMatrix(simMatrix_SD_NE_D014_k6_c6, scores_simmatrix_SD_NE_D014_k6_c6, threshold = 0.7, orgdb = "org.Hs.eg.db")
+#heatmapPlot(simMatrix_SD_NE_D014_k6_c6,reducedTerms_SD_NE_D014_k6_c6,annotateParent = T,annotationLabel = "parentTerm",fontsize= 6) # this is super noisy
+scatterPlot(simMatrix_SD_NE_D014_k6_c6,reducedTerms_SD_NE_D014_k6_c6)
+treemapPlot(reducedTerms_SD_NE_D014_k6_c6)
+
+
+#########k8 VST scaled##########
+set.seed(123)
+k8 <- kmeans(vst_SD_d014_scaled, centers = 8, nstart = 25)
+k8_mat <- cbind(vst_SD_d014_scaled,k8$cluster)
+ord <- order(k8_mat[,17])
+k8_mat <- k8_mat[ord,]
+rowanno <- data.frame(Clusters= factor(k8_mat[,17]))
+kcolors <-met.brewer(name = "OKeeffe1",n = 8,type = 'discrete')
+length(kcolors)
+names(kcolors) <- unique(rowanno$Clusters)
+
+pheatmap(k8_mat[,1:16],
+         cluster_rows = F,
+         cluster_cols = F,
+         border_color = NA,
+         show_colnames = T,
+         show_rownames = F,
+         annotation_row = rowanno)
+k8_vst_centers <- k8$centers
+library(MatrixGenerics)
+library(ggplot2)
+k8_vst_centers_df <- data.frame(k8$centers, group= c(1:8))
+ggparcoord(k8_vst_centers, columns = 1:16, groupColumn = 'group') + facet_wrap(~group, nrow = 5)
+k8$size
+k8_vst_centers_medians <- data.frame(A=rowMedians(k8_vst_centers[,1:3]),B=rowMedians(k8_vst_centers[,4:6]),C=rowMedians(k8_vst_centers[,7:10]),D=rowMedians(k8_vst_centers[,11:13]),E=rowMedians(k8_vst_centers[,14:16]),group = c(1:8))
+ggparcoord(k8_vst_centers_medians, columns = 1:5, groupColumn = 'group') + facet_wrap(~group, nrow = 5)
+
+###Genes by cluster for 8 clusters####
+genes_vst_d014_k8_c1 <- names(k8$cluster)[which(k8$cluster==1)]
+genes_vst_d014_k8_c2 <- names(k8$cluster)[which(k8$cluster==2)]
+genes_vst_d014_k8_c3 <- names(k8$cluster)[which(k8$cluster==3)]
+genes_vst_d014_k8_c4 <- names(k8$cluster)[which(k8$cluster==4)]
+genes_vst_d014_k8_c5 <- names(k8$cluster)[which(k8$cluster==5)]
+genes_vst_d014_k8_c6 <- names(k8$cluster)[which(k8$cluster==6)]
+genes_vst_d014_k8_c7 <- names(k8$cluster)[which(k8$cluster==7)]
+genes_vst_d014_k8_c8 <- names(k8$cluster)[which(k8$cluster==8)]
+
+
+##### vst d014 7 cluster kmeans#########
+set.seed(123)
+k7 <- kmeans(vst_SD_d014_scaled, centers = 7, nstart = 25)
+k7_mat <- cbind(vst_SD_d014_scaled,k7$cluster)
+ord <- order(k7_mat[,17])
+k7_mat <- k7_mat[ord,]
+
+pheatmap(k7_mat[,1:16],
+         cluster_rows = F,
+         cluster_cols = F,
+         border_color = NA,
+         show_colnames = T,
+         show_rownames = F)
+
+###k10####
+set.seed(123)
+k10_vst_SD_d014 <- kmeans(vst_SD_d014_scaled, centers = 10, nstart = 25)
+k10_vst_SD_d014_mat <- cbind(vst_SD_d014_scaled,k10_vst_SD_d014$cluster)
+ord <- order(k10_vst_SD_d014_mat[,17])
+k10_vst_SD_d014_mat <- k10_vst_SD_d014_mat[ord,]
+rowanno <- data.frame(Clusters= factor(k10_vst_SD_d014_mat[,17]))
+kcolors <-met.brewer(name = "OKeeffe1",n = 10,type = 'discrete')
+length(kcolors)
+names(kcolors) <- unique(rowanno$Clusters)
+
+pheatmap(k10_vst_SD_d014_mat[,1:16],
+         cluster_rows = F,
+         cluster_cols = F,
+         border_color = NA,
+         show_colnames = T,
+         show_rownames = F,
+         annotation_row = rowanno)
+k10_vst_SD_d014_centers <- k10_vst_SD_d014$centers
+k10_vst_centers_df <- data.frame(k10_vst_SD_d014$centers, group= c(1:10))
+ggparcoord(k10_vst_centers_df, columns = 1:16, groupColumn = 'group') + facet_wrap(~group, nrow = 5)
+k10_vst_SD_d014$size
+k10_vst_centers_medians <- data.frame(A=rowMedians(k10_vst_SD_d014_centers[,1:3]),B=rowMedians(k10_vst_SD_d014_centers[,4:6]),C=rowMedians(k10_vst_SD_d014_centers[,7:10]),D=rowMedians(k10_vst_SD_d014_centers[,11:13]),E=rowMedians(k10_vst_SD_d014_centers[,14:16]),group = c(1:10))
+library(hrbrthemes)
+library(GGally)
+library(viridis)
+ggparcoord(k10_vst_centers_medians, columns = 1:5, groupColumn = 'group', showPoints = T, title = "k10 vst scaling") 
+
+###########Everything below this is with the wrong normalized counts data################
+# #### now I wan to run the kemans clustering with the medians for each subgroup ###
+# #Data set to use: SD_NE_median_normcounts_df which is from res_sig_SD_NE_vst_normalized_data
+# ##Checking the best number of clusters using seveal methods
+# set.seed(123)
+# fviz_nbclust(SD_NE_median_normcounts_df, kmeans, method = "wss")
+# 
+# set.seed(123)
+# fviz_nbclust(SD_NE_median_normcounts_df, kmeans, method = "silhouette")
+# 
+# #compute the kmeans 
+# set.seed(123)
+# k5 <- kmeans(SD_NE_median_normcounts_df, 5, nstart = 25)
+# print(k5)
+# #visualize the clusters
+# fviz_cluster(k5, data = df_normcounts_sd_NE_Trans_scaled)
+# ### Plot K means heatmap
+# Heatmap(df_normcounts_sd_NE_Trans_scaled, name = "Control_samples Expression", row_km = 5, column_order = colnames(df_normcounts_sd_NE_Trans_scaled),show_row_names = F)
+# 
+# 
+# 
+# #run k means for the best number of clusters
+# set.seed(123)
+# gap_stat <- clusGap(df, FUN = kmeans, nstart = 25,
+#                     K.max = 10, B = 50)
+# res_sig_SD_NE_normalized_counts <- data.frame(res_sig_SD_NE_normalized_counts)
+# #Creating logfoldchange table
+# 
+# dim(res_sig_SD_NE_normalized_counts)#13013 16
+# ##Check the best number of clusters 
+# set.seed(123)
+# fviz_nbclust(res_sig_SD_NE_normalized_counts, kmeans, method = "silhouette")
+# set.seed(123)#reset setseed
+# fviz_nbclust(res_sig_SD_NE_normalized_counts, kmeans, method = "wss")
+# #compute gapstat for heirarchal clustering 
+# #gap_stat <- clusGap(res_sig_SD_NE_normalized_counts, FUN = kmeans, nstart = 25,K.max = 10, B = 10)
+# #fviz_gap_stat(gap_stat)
+# 
+# k5 <- kmeans(df_normcounts_sd_NE_Trans_scaled, 5, nstart = 25)
+# print(k5)
+# #################### Trying for scaled significant data#######################
+# res_sig_SD_NE_NC_scale <- scale(na.omit(data.frame(res_sig_SD_NE_normalized_counts)))
+# head(res_sig_SD_NE_NC_scale)
+# dim(res_sig_SD_NE_NC_scale)#13013 16 I don't now if I need to scale the data given that it is already normalized 
+# set.seed(123)
+# 
+# fviz_nbclust(res_sig_SD_NE_NC_scale, kmeans, method = "silhouette")
+# set.seed(123)#reset setseed
+# fviz_nbclust(res_sig_SD_NE_NC_scale, kmeans, method = "wss")
+# ##Testing out a few clusters
+# set.seed(123)
+# k2_sig_NC <- kmeans(res_sig_SD_NE_NC_scale, 2, nstart = 25)
+# k2_sig_NC
+# set.seed(123)
+# k4_sig_NC <- kmeans(res_sig_SD_NE_NC_scale, 4, nstart = 25)
+# k4_sig_NC
+# set.seed(123)
+# k5_sig_NC <- kmeans(res_sig_SD_NE_NC_scale, 5, nstart = 25)
+# print(k5_sig_NC)
+# set.seed(123)
+# k8_sig_NC <- kmeans(res_sig_SD_NE_NC_scale, 8, nstart = 25)
+# k8_sig_NC
+# set.seed(123)
+# k10_sig_NC <- kmeans(res_sig_SD_NE_NC_scale, 10, nstart = 25)
+# k10_sig_NC
+# #visualize the clusters
+# fviz_cluster(k10_sig_NC, data = res_sig_SD_NE_NC_scale)
+# k10_sig_NC
+# ### Plot K means heatmap
+# Heatmap(res_sig_SD_NE_NC_scale, name = "Control_samples Expression", row_km = 10, column_order = colnames(res_sig_SD_NE_NC_scale),show_row_names = F)
+#####Example of ggally plot with kmenas clusters#####
+# library(GGally)
+# wine <- read.csv("/Users/homie/Downloads/wine_nocolor.csv")
+# library(GGally)
+# wine1 <- wine[2:13]
+# wine
+# wine1$q <- factor(wine1$q)
+# set.seed(1234)
+# wine1$Cluster7 <- factor(kmeans(wine[1:11], 7)$cluster)
+# ggpairs(wine1, columns=1:11, colour='Cluster7', lower=list(continuous='points'), axisLabels='none', upper=list(continuous='blank'), title="k-means with 7 clusters")
+
+####GGAlly pot with my 10 clusters####
+set.seed(1234)
+colnames(res_sig_SD_NE_NC_scale)
+head(res_sig_SD_NE_NC_scale)
+res_sig_SD_NE_NC_scale_df <- data.frame(res_sig_SD_NE_NC_scale)
+colnames(res_sig_SD_NE_NC_scale_df)
+res_sig_SD_NE_NC_scale_df$Cluster10 <- k10_sig_NC$cluster
+res_sig_SD_NE_NC_scale_df$Cluster10 <- as.factor(res_sig_SD_NE_NC_scale_df$Cluster10)
+
+centroids <- k10_sig_NC$centers
+k10_sig_NC$size
+dim(centroids)
+c(1:10)
+centroids <- data.frame(centroids)
+centroids$group <- c(1:10)
+centroids$group
+centroids
+#ploting the centroids as a prallel coordinates map
+library(GGally)
+
+ggparcoord(centroids, columns = 1:16, groupColumn = 'group') + facet_wrap(~group)
+
+ggpairs(res_sig_SD_NE_NC_scale_df, columns=1:16, colour='Cluster10', lower=list(continuous='points'), axisLabels='none', upper=list(continuous='blank'), title="k-means with 10 clusters")
+
+#plotting just the clusters
+library(GGally)
+library(plotly)
+
+
+p <- ggparcoord(data = k10_sig_NC$centers, columns = c(1:3), groupColumn = "Cluster10", scale = "std") + labs(x = "Samples", y = "value (in standard-deviation units)", title = "Clustering")
+ggplotly(p)
+
+
+######################Trying again with just the day 0 and day 3 samples#####################################
+res_sig_SD_NE_NC_scale_D03 <- scale(na.omit(data.frame(res_sig_SD_NE_normalized_counts[,1:6])))
+head(res_sig_SD_NE_NC_scale_D03)
+dim(res_sig_SD_NE_NC_scale_D03)
+set.seed(123)
+fviz_nbclust(res_sig_SD_NE_NC_scale_D03, kmeans, method = "silhouette")
+set.seed(123)#reset setseed
+fviz_nbclust(res_sig_SD_NE_NC_scale_D03, kmeans, method = "wss")
+##Testing out a few clusters
+set.seed(123)
+k2_sig_NC_d03 <- kmeans(res_sig_SD_NE_NC_scale_D03, 2, nstart = 25)
+k2_sig_NC_d03
+set.seed(123)
+k15_sig_NC_d03 <- kmeans(res_sig_SD_NE_NC_scale_D03, 15, nstart = 25)
+k15_sig_NC_d03$size
+k15_sig_NC_d03$centers
+set.seed(123)
+k5_sig_NC_d03 <- kmeans(res_sig_SD_NE_NC_scale, 5, nstart = 25)
+print(k5_sig_NC_d03)
+set.seed(123)
+k8_sig_NC <- kmeans(res_sig_SD_NE_NC_scale, 8, nstart = 25)
+k8_sig_NC
+set.seed(123)
+k10_sig_NC <- kmeans(res_sig_SD_NE_NC_scale, 10, nstart = 25)
+k10_sig_NC
+#visualize the clusters
+fviz_cluster(k10_sig_NC, data = res_sig_SD_NE_NC_scale)
+k10_sig_NC
+### Plot K means heatmap
+Heatmap(res_sig_SD_NE_NC_scale, name = "Control_samples Expression", row_km = 10, column_order = colnames(res_sig_SD_NE_NC_scale),show_row_names = F)
+
+#####Example of ggally plot with kmenas clusters#####
+# library(GGally)
+# wine <- read.csv("/Users/homie/Downloads/wine_nocolor.csv")
+# library(GGally)
+# wine1 <- wine[2:13]
+# wine
+# wine1$q <- factor(wine1$q)
+# set.seed(1234)
+# wine1$Cluster7 <- factor(kmeans(wine[1:11], 7)$cluster)
+# ggpairs(wine1, columns=1:11, colour='Cluster7', lower=list(continuous='points'), axisLabels='none', upper=list(continuous='blank'), title="k-means with 7 clusters")
+
+####GGAlly pot with my 10 clusters####
+set.seed(1234)
+colnames(res_sig_SD_NE_NC_scale)
+head(res_sig_SD_NE_NC_scale)
+res_sig_SD_NE_NC_scale_df <- data.frame(res_sig_SD_NE_NC_scale)
+colnames(res_sig_SD_NE_NC_scale_df)
+res_sig_SD_NE_NC_scale_df$Cluster10 <- k10_sig_NC$cluster
+res_sig_SD_NE_NC_scale_df$Cluster10 <- as.factor(res_sig_SD_NE_NC_scale_df$Cluster10)
+
+centroids <- k10_sig_NC$centers
+k10_sig_NC$size
+dim(centroids)
+c(1:10)
+centroids <- data.frame(centroids)
+centroids$group <- c(1:10)
+centroids$group
+centroids
+#ploting the centroids as a prallel coordinates map
+library(GGally)
+
+ggparcoord(centroids, columns = 1:16, groupColumn = 'group') + facet_wrap(~group)
+
+ggpairs(res_sig_SD_NE_NC_scale_df, columns=1:16, colour='Cluster10', lower=list(continuous='points'), axisLabels='none', upper=list(continuous='blank'), title="k-means with 10 clusters")
+
+#plotting just the clusters
+library(GGally)
+library(plotly)
+
+
+p <- ggparcoord(data = k10_sig_NC$centers, columns = c(1:3), groupColumn = "Cluster10", scale = "std") + labs(x = "Samples", y = "value (in standard-deviation units)", title = "Clustering")
+ggplotly(p)
+
+#calculate best number of clusters for this dataframe
+#gap_stat <- clusGap(df_normcounts_sd_NE, FUN = kmeans, nstart = 25,
+                 #   K.max = 10, B = 50)
+
+#gap_stat <- clusGap(df_normcounts_sd_NE_Trans, FUN = kmeans, nstart = 25,K.max = 10, B = 50)
+## Run kmeans for Significant gene DF transposed 
+fviz_nbclust(df_normcounts_sd_NE, kmeans, method = "silhouette")
+set.seed(123)#reset setseed
+#calculate best number of clusters for this dataframe
+#gap_stat <- clusGap(df_normcounts_sd_NE, FUN = kmeans, nstart = 25,K.max = 10, B = 50)
+set.seed(123)
+#gap_stat <- clusGap(df_normcounts_sd_NE_Trans, FUN = kmeans, nstart = 25,K.max = 10, B = 50)
+
+```
+
+#DAY 0-3 D3 Contrast from standard Differentiation
+##Contrast Day 0 Day 3
+```{r contrast day 0 day 3}
+install.packages("MetBrewer")
+head(res_SD_NoExtra_alph05) # this is the whole data without a contrast
+library(MetBrewer)
+mycolors <- MetPalettes["Degas"]
+res_SD_NoExtra_D03_a05 <- results(DES_SD_NoExtra, contrast=c("Time","Day_3","Day_0"),alpha = 0.05)
+head(res_SD_NoExtra_D03_a05)
+
+####Annotating the results####
+#install.packages("devtools")
+#devtools::install_github("stephenturner/annotables")
+library(dbplyr)
+library(annotables)
+
+grch38 # This is the genome build that I will be using for the annotation
+dim(res_SD_NoExtra_D03_a05) #28869 6 
+res_SD_NoExtra_D03_a05_anno <- data.frame(res_SD_NoExtra_D03_a05) %>% rownames_to_column(var = "genes")
+res_SD_NoExtra_D03_a05_anno$ensgene <- substr(res_SD_NoExtra_D03_a05_anno$genes,1,15)
+ 
+res_SD_NoExtra_D03_a05_anno <- left_join(x=res_SD_NoExtra_D03_a05_anno, y = grch38[,c("ensgene","symbol","description")],  by="ensgene")
+dim(res_SD_NoExtra_D03_a05_anno) #29054 by 10 There are a few hundred extras 
+
+res_sig_SD_NE_ntd_normalized_data <- assay(ntd_SD_NE_D014)[rownames(res_sig_SD_NE_order),] 
+res_sig_SD_NE_vst_normalized_data <- vsd_mat_SD_NoExtra[rownames(res_sig_SD_NE_order),]
+########AnnotationDbi Annotation #############
+suppressPackageStartupMessages(library("AnnotationDbi"))
+suppressPackageStartupMessages(library(org.Hs.eg.db))
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+library(EnsDb.Hsapiens.v86)
+edb <- EnsDb.Hsapiens.v86
+organism(edb)
+keytypes(edb)
+keys(edb,keytype = "GENEID")
+dim(res_SD_NoExtra_D03_a05)
+#SD 
+res_SD_NoExtra_D03_a05_annoDbi <- data.frame(res_SD_NoExtra_D03_a05)
+res_SD_NoExtra_D03_a05_annoDbi$symbol<-                                                                                  mapIds(edb,keys=rownames(res_SD_NoExtra_D03_a05_annoDbi),                                          column="SYMBOL",keytype="GENEID",multiVals="first")
+str(res_SD_NoExtra_D03_a05_annoDbi) #23202 6 This method doesn't add the extra rows!
+
+####Significant Padj values#####
+sum(res_SD_NoExtra_D03_a05_anno$padj < 0.05, na.rm=TRUE) #12858 lowering the Padjusted value removed some of the genes
+res_SD_NE_D0_D3_padj0.05_anno <- res_SD_NoExtra_D03_a05_anno[which(res_SD_NoExtra_D03_a05_anno$padj<0.05,),]
+
+dim(res_SD_NE_D0_D3_padj0.05_anno)#12686
+res_SD_NE_D0_D3_padj0.05_anno <- res_SD_NE_D0_D3_padj0.05_anno[which(is.na(res_SD_NE_D0_D3_padj0.05_anno$padj)),] #remove #######other annoDbi subset######
+res_SD_NoExtra_D03_a05_annoDbi_padj05 <- res_SD_NoExtra_D03_a05_annoDbi[which(res_SD_NoExtra_D03_a05_annoDbi$padj <0.05),]
+str(res_SD_NoExtra_D03_a05_annoDbi_padj05)#12684 genes subsetting normalized counts by this
+
+###
+res_SD_NoExtra_D03_a05_annoDbi_padj05 <- res_SD_NoExtra_D03_a05_annoDbi_padj05[order(res_SD_NoExtra_D03_a05_annoDbi_padj05$padj),]
+
+## Subseting normalized data from teh vst method
+res_sig_SD_NE_normalized_counts_D03 <- vsd_mat_SD_NoExtra[rownames(res_SD_NoExtra_D03_a05_annoDbi_padj05),]
+str(res_sig_SD_NE_normalized_counts_D03) #12684 The same as eht annodbi called one.
+
+
+## LLOG FOLD CHANGE SUBSET#####
+##subseting data for adjusted logfold to minimize number of genes to look at. 
+str(res_SD_NoExtra_D03_a05_annoDbi_padj05) #12684
+res_SD_NoExtra_D03_a05_annoDbi_padj05_logfold0.5 <- res_SD_NoExtra_D03_a05_annoDbi_padj05[which(abs(res_SD_NoExtra_D03_a05_annoDbi_padj05$log2FoldChange)>0.5),]
+str(res_SD_NoExtra_D03_a05_annoDbi_padj05_logfold0.5)# down to 9170 genes. i will subset the vst normalized data to these genes as well. 
+res_sig_SD_NE_normalized_counts_D03_padj_l2fc <- vsd_SD_NE_D014_mat_normdata[rownames(res_SD_NoExtra_D03_a05_annoDbi_padj05_logfold0.5),]
+str(res_sig_SD_NE_normalized_counts_D03_padj_l2fc) # down to 9170 genes
+```
+
+##Kmeans Day 0 vs 3
+```{r Kmeans day 0 vs 3}
+
+#######making median table of D03 padj<0.05 gene Expression Median table ###############
+str(res_sig_SD_NE_normalized_counts_D03) #12684
+res_sig_SD_NE_NC_D03_medians <- data.frame(A=rowMedians(res_sig_SD_NE_normalized_counts_D03[,1:3]),B=rowMedians(res_sig_SD_NE_normalized_counts_D03[,4:6]),C=rowMedians(res_sig_SD_NE_normalized_counts_D03[,7:10]),D=rowMedians(res_sig_SD_NE_normalized_counts_D03[,11:13]),E=rowMedians(res_sig_SD_NE_normalized_counts_D03[,14:16]))
+str(res_sig_SD_NE_NC_D03_medians)
+rownames(res_sig_SD_NE_NC_D03_medians) <- rownames(res_sig_SD_NE_normalized_counts_D03)
+str(res_sig_SD_NE_NC_D03_medians)
+res_sig_SD_NE_NC_D03_medians_scale <- scale(res_sig_SD_NE_NC_D03_medians) #scaling data
+# #### check K-Means
+set.seed(123)
+#fviz_nbclust(res_sig_SD_NE_NC_D03_medians_scale, kmeans, method = "silhouette")
+set.seed(123)#reset setseed
+# fviz_nbclust(res_sig_SD_NE_NC_D03_medians_scale, kmeans, method = "wss")
+# 
+##KMEANS STARTS HERE####
+### scaling data with the t(scale(t())) method of the full dataset, not the medians
+##Example scaling from non-d03 contrast 
+vst_SD_d03_scaled<- t(scale(t(res_sig_SD_NE_normalized_counts_D03)))
+dim(vst_SD_d03_scaled)
+str(vst_SD_d03_scaled)
+###Trying with VST scaling before running medians####
+#k6 vst based normalization 
+set.seed(123)
+k6_sig_NC_d03_scale <- kmeans(vst_SD_d03_scaled, 6, nstart = 25) # k means test i will run 6/7/8
+k6_sig_NC_d03_scale$
+dim(k6_sig_NC_d03_scale)
+image(t(scale(vst_SD_d03_scaled))[,order(k6_sig_NC_d03_scale$cluster)],main = "6 clusters scaled")
+
+#plot heatmap
+image(t(scale(res_sig_SD_NE_normalized_counts_D03))[,order(k6_sig_NC_d03_scale$cluster)],main = "6 clusters scaled")
+
+library(pheatmap)
+### Images for k6 D03 contrast #####
+#vst_SD_d014_scaled<- t(scale(t(res_sig_SD_NE_vst_normalized_data)))
+k6_vst_SD_d03_mat <- cbind(vst_SD_d03_scaled,k6_sig_NC_d03_scale$cluster)
+ord <- order(k6_vst_SD_d03_mat[,17])
+k6_vst_SD_d03_mat <- k6_vst_SD_d03_mat[ord,]
+rowanno <- data.frame(Clusters= factor(k6_vst_SD_d03_mat[,17]))
+kcolors <-met.brewer(name = "OKeeffe1",n = 6,type = 'discrete')
+length(kcolors)
+names(kcolors) <- unique(rowanno$Clusters)
+
+pheatmap(k6_vst_SD_d03_mat[,1:16],
+         cluster_rows = F,
+         cluster_cols = F,
+         border_color = NA,
+         show_colnames = T,
+         show_rownames = F,
+         annotation_row = rowanno)
+k6_vst_SD_d03_centers <- k6_sig_NC_d03_scale$centers
+k6_vst_centers_d03_df <- data.frame(k6_sig_NC_d03_scale$centers, group= c(1:6))
+ggparcoord(k6_vst_centers_d03_df, columns = 1:16, groupColumn = 'group') + facet_wrap(~group, nrow = 5)
+k6_vst_SD_d014$size
+k6_vst_centers_medians <- data.frame(A=rowMedians(k6_vst_SD_d03_centers[,1:3]),B=rowMedians(k6_vst_SD_d03_centers[,4:6]),C=rowMedians(k6_vst_SD_d03_centers[,7:6]),D=rowMedians(k6_vst_SD_d03_centers[,11:13]),E=rowMedians(k6_vst_SD_d03_centers[,14:16]),group = c(1:6))
+library(hrbrthemes)
+library(GGally)
+library(viridis)
+ggparcoord(k6_vst_centers_medians, columns = 1:5, groupColumn = 'group', showPoints = T, title = "k6 d03 vst scaling") 
+ggparcoord(k6_vst_centers_medians, columns = 1:5, groupColumn = 'group', showPoints = T, title = "k6 d03 vst scaling")+ facet_wrap(~group)
+##identifying all the genes in each cluster
+k6_SD_vst_d03_clusters <- k6_sig_NC_d03_scale$cluster
+str(k6_SD_vst_d03_clusters)
+#Subset of genes from each cluster
+k6_SD_vst_d03_clusters_1 <- names(k6_SD_vst_d03_clusters[which(k6_SD_vst_d03_clusters==1)])
+k6_SD_vst_d03_clusters_2 <- names(k6_SD_vst_d03_clusters[which(k6_SD_vst_d03_clusters==2)])
+k6_SD_vst_d03_clusters_3 <- names(k6_SD_vst_d03_clusters[which(k6_SD_vst_d03_clusters==3)])
+k6_SD_vst_d03_clusters_4 <- names(k6_SD_vst_d03_clusters[which(k6_SD_vst_d03_clusters==4)])
+k6_SD_vst_d03_clusters_5 <- names(k6_SD_vst_d03_clusters[which(k6_SD_vst_d03_clusters==5)])
+k6_SD_vst_d03_clusters_6 <- names(k6_SD_vst_d03_clusters[which(k6_SD_vst_d03_clusters==6)])
+
+#########Save the heatmap kmeans clustering#################################
+save(list = c("k6_sig_NC_d03_scale","k6_SD_vst_d03_clusters","k6_vst_SD_d03_centers","k6_vst_centers_medians","vst_SD_d03_scaled","k6_SD_vst_d03_clusters_1","k6_SD_vst_d03_clusters_2","k6_SD_vst_d03_clusters_3","k6_SD_vst_d03_clusters_4","k6_SD_vst_d03_clusters_5","k6_SD_vst_d03_clusters_6"),file = "~/Documents/Git/MSC_Bulk/RNA_seq_Data/SD_NE_Kmeans6_VST_variables.RData")
+
+##KMEANS with l2fc cutoff HERE####
+### scaling data with the t(scale(t())) method of the full dataset, not the medians
+##Example scaling from non-d03 contrast 
+vst_SD_d03_l2fc_scaled<- t(scale(t(res_sig_SD_NE_normalized_counts_D03_padj_l2fc)))
+dim(vst_SD_d03_l2fc_scaled) #9170 16
+###Trying with VST scaling before running medians####
+#k6 vst based normalization 
+set.seed(123)
+k6_sig_NC_d03_l2fc_scale <- kmeans(vst_SD_d03_l2fc_scaled, 6, nstart = 25) # k means test i will run 6/7/8
+k6_sig_NC_d03_l2fc_scale
+
+image(t(scale(k6_sig_NC_d03_l2fc_scale))[,order(k6_sig_NC_d03_l2fc_scale$cluster)],main = "6 clusters scaled")
+# 
+# #plot heatmap
+image(t(scale(res_sig_SD_NE_NC_D03_medians))[,order(k6_sig_NC_d03_l2fc$cluster)],main = "6 clusters scaled")
+
+library(pheatmap)
+### Images for k6 D03 contrast #####
+#vst_SD_d014_scaled<- t(scale(t(res_sig_SD_NE_vst_normalized_data)))
+k6_vst_SD_d03_l2fc_mat <- cbind(vst_SD_d03_l2fc_scaled,k6_sig_NC_d03_l2fc_scale$cluster)
+ord <- order(k6_vst_SD_d03_l2fc_mat[,17])
+k6_vst_SD_d03_l2fc_mat <- k6_vst_SD_d03_l2fc_mat[ord,]
+rowanno <- data.frame(Clusters= factor(k6_vst_SD_d03_l2fc_mat[,17]))
+kcolors <-met.brewer(name = "OKeeffe1",n = 6,type = 'discrete')
+length(kcolors)
+names(kcolors) <- unique(rowanno$Clusters)
+
+pheatmap(k6_vst_SD_d03_l2fc_mat[,1:16],
+         cluster_rows = F,
+         cluster_cols = F,
+         border_color = NA,
+         show_colnames = T,
+         show_rownames = F,
+         annotation_row = rowanno)
+k6_vst_SD_d03_l2fc_centers <- k6_sig_NC_d03_l2fc_scale$centers
+k6_vst_centers_d03_df <- data.frame(k6_sig_NC_d03_l2fc_scale$centers, group= c(1:6))
+ggparcoord(k6_vst_centers_d03_df, columns = 1:16, groupColumn = 'group',title = "6 cluster K mean D03 VST l2fc reduced") + facet_wrap(~group, nrow = 5)
+#k6_vst_SD_d014$size
+k6_vst_centers_medians <- data.frame(A=rowMedians(k6_vst_SD_d03_l2fc_centers[,1:3]),B=rowMedians(k6_vst_SD_d03_l2fc_centers[,4:6]),C=rowMedians(k6_vst_SD_d03_l2fc_centers[,7:6]),D=rowMedians(k6_vst_SD_d03_l2fc_centers[,11:13]),E=rowMedians(k6_vst_SD_d03_l2fc_centers[,14:16]),group = c(1:6))
+library(hrbrthemes)
+library(GGally)
+library(viridis)
+ggparcoord(k6_vst_centers_medians, columns = 1:5, groupColumn = 'group', showPoints = T, title ="6 cluster K mean D03 VST l2fc reduced vst scaling") 
+ggparcoord(k6_vst_centers_medians, columns = 1:5, groupColumn = 'group', showPoints = T, title = "k6 d03 l2fc.5 vst scaling")+ facet_wrap(~group)
+##identifying all the genes in each cluster
+k6_vst_SD_d03_l2fc_clusters <- k6_sig_NC_d03_l2fc_scale$cluster
+str(k6_vst_SD_d03_l2fc_clusters)
+#Subset of genes from each cluster
+k6_vst_SD_d03_l2fc_clusters_1 <- names(k6_vst_SD_d03_l2fc_clusters[which(k6_vst_SD_d03_l2fc_clusters==1)])
+k6_vst_SD_d03_l2fc_clusters_2 <- names(k6_vst_SD_d03_l2fc_clusters[which(k6_vst_SD_d03_l2fc_clusters==2)])
+k6_vst_SD_d03_l2fc_clusters_3 <- names(k6_vst_SD_d03_l2fc_clusters[which(k6_vst_SD_d03_l2fc_clusters==3)])
+k6_vst_SD_d03_l2fc_clusters_4 <- names(k6_vst_SD_d03_l2fc_clusters[which(k6_vst_SD_d03_l2fc_clusters==4)])
+k6_vst_SD_d03_l2fc_clusters_5 <- names(k6_vst_SD_d03_l2fc_clusters[which(k6_vst_SD_d03_l2fc_clusters==5)])
+k6_vst_SD_d03_l2fc_clusters_6 <- names(k6_vst_SD_d03_l2fc_clusters[which(k6_vst_SD_d03_l2fc_clusters==6)])
+
+#########Save the heatmap kmeans clustering#################################
+save(list = c("k6_sig_NC_d03_l2fc_scale","k6_vst_SD_d03_l2fc_clusters","k6_vst_SD_d03_l2fc_centers","k6_vst_centers_medians","vst_SD_d03_l2fc_scaled","k6_vst_SD_d03_l2fc_clusters_1","k6_vst_SD_d03_l2fc_clusters_2","k6_vst_SD_d03_l2fc_clusters_3","k6_vst_SD_d03_l2fc_clusters_4","k6_vst_SD_d03_l2fc_clusters_5","k6_vst_SD_d03_l2fc_clusters_6"),file = "~/Documents/Git/MSC_Bulk/RNA_seq_Data/SD_NE_Kmeans6_VST_l2fc_variables.RData")
+
+#####Testing several cluster sizes
+
+ 
+#k7 vst based normalization 
+### vst_SD_d03_scaled<- t(scale(t(res_sig_SD_NE_normalized_counts_D03)))
+set.seed(123)
+k7_sig_NC_d03_scale <- kmeans(vst_SD_d03_scaled, 7, nstart = 25) # k means test i will run 7/7/8
+k7_sig_NC_d03_scale
+dim(k7_sig_NC_d03_scale)
+#image(t(scale(k7_sig_NC_d03_scale))[,order(k7_sig_NC_d03_scale$cluster)],main = "7 clusters scaled")
+
+#plot heatmap of K2
+#image(t(scale(res_sig_SD_NE_NC_D03_medians))[,order(k7_sig_NC_d03$cluster)],main = "4 clusters scaled")
+
+library(pheatmap)
+### Images for k7 D03 contrast #####
+
+k7_vst_SD_d03_mat <- cbind(vst_SD_d03_scaled,k7_sig_NC_d03_scale$cluster)
+ord <- order(k7_vst_SD_d03_mat[,17])
+k7_vst_SD_d03_mat <- k7_vst_SD_d03_mat[ord,]
+rowanno <- data.frame(Clusters= factor(k7_vst_SD_d03_mat[,17]))
+kcolors <-met.brewer(name = "OKeeffe1",n = 7,type = 'discrete')
+length(kcolors)
+names(kcolors) <- unique(rowanno$Clusters)
+
+pheatmap(k7_vst_SD_d03_mat[,1:17],
+         cluster_rows = F,
+         cluster_cols = F,
+         border_color = NA,
+         show_colnames = T,
+         show_rownames = F,
+         annotation_row = rowanno)
+k7_vst_SD_d03_centers <- k7_sig_NC_d03_scale$centers
+k7_vst_centers_d03_df <- data.frame(k7_sig_NC_d03_scale$centers, group= c(1:7))
+ggparcoord(k7_vst_centers_d03_df, columns = 1:17, groupColumn = 'group') + facet_wrap(~group, nrow = 5)
+k7_sig_NC_d03_scale$size
+k7_vst_centers_medians <- data.frame(A=rowMedians(k7_vst_SD_d03_centers[,1:3]),B=rowMedians(k7_vst_SD_d03_centers[,4:6]),C=rowMedians(k7_vst_SD_d03_centers[,7:10]),D=rowMedians(k7_vst_SD_d03_centers[,11:13]),E=rowMedians(k7_vst_SD_d03_centers[,14:16]),group = c(1:7))
+library(hrbrthemes)
+library(GGally)
+library(viridis)
+ggparcoord(k7_vst_centers_medians, columns = 1:5, groupColumn = 'group', showPoints = T, title = "k7 d03 vst scaling") 
+ggparcoord(k7_vst_centers_medians, columns = 1:5, groupColumn = 'group', showPoints = T, title = "k7 d03 vst scaling")+ facet_wrap(~group)
+
+#Also ran 8 clusters####
+#####k8 vst based normalization K-means 8#######
+### vst_SD_d03_scaled<- t(scale(t(res_sig_SD_NE_normalized_counts_D03)))
+set.seed(123)
+k8_sig_NC_d03_scale <- kmeans(vst_SD_d03_scaled, 8, nstart = 25) # k means test i will run 7/7/8
+k8_sig_NC_d03_scale
+dim(k8_sig_NC_d03_scale)
+#image(t(scale(k8_sig_NC_d03_scale))[,order(k8_sig_NC_d03_scale$cluster)],main = "8 clusters scaled")
+
+#plot heatmap of K2
+#image(t(scale(res_sig_SD_NE_NC_D03_medians))[,order(k8_sig_NC_d03$cluster)],main = "4 clusters scaled")
+
+library(pheatmap)
+### Images for k8 D03 contrast #####
+
+k8_vst_SD_d03_mat <- cbind(vst_SD_d03_scaled,k8_sig_NC_d03_scale$cluster)
+ord <- order(k8_vst_SD_d03_mat[,17])
+k8_vst_SD_d03_mat <- k8_vst_SD_d03_mat[ord,]
+rowanno <- data.frame(Clusters= factor(k8_vst_SD_d03_mat[,17]))
+kcolors <-met.brewer(name = "OKeeffe1",n = 8,type = 'discrete')
+length(kcolors)
+names(kcolors) <- unique(rowanno$Clusters)
+
+pheatmap(k8_vst_SD_d03_mat[,1:16],
+         cluster_rows = F,
+         cluster_cols = F,
+         border_color = NA,
+         show_colnames = T,
+         show_rownames = F,
+         annotation_row = rowanno)
+k8_vst_SD_d03_centers <- k8_sig_NC_d03_scale$centers
+k8_vst_centers_d03_df <- data.frame(k8_sig_NC_d03_scale$centers, group= c(1:8))
+ggparcoord(k8_vst_centers_d03_df, columns = 1:17, groupColumn = 'group') + facet_wrap(~group, nrow = 5)
+k8_sig_NC_d03_scale$size
+k8_vst_centers_medians <- data.frame(A=rowMedians(k8_vst_SD_d03_centers[,1:3]),B=rowMedians(k8_vst_SD_d03_centers[,4:6]),C=rowMedians(k8_vst_SD_d03_centers[,8:10]),D=rowMedians(k8_vst_SD_d03_centers[,11:13]),E=rowMedians(k8_vst_SD_d03_centers[,14:16]),group = c(1:8))
+library(hrbrthemes)
+library(GGally)
+library(viridis)
+ggparcoord(k8_vst_centers_medians, columns = 1:5, groupColumn = 'group', showPoints = T, title = "k8 d03 vst scaling") 
+ggparcoord(k8_vst_centers_medians, columns = 1:5, groupColumn = 'group', showPoints = T, title = "k8 d03 vst scaling")+ facet_wrap(~group)
+
+####k10 vst based normalization K-menas 10#######
+### vst_SD_d03_scaled<- t(scale(t(res_sig_SD_NE_normalized_counts_D03)))
+set.seed(123)
+k10_sig_NC_d03_scale <- kmeans(vst_SD_d03_scaled, 10, nstart = 25) # k means test i will run 7/7/8
+k10_sig_NC_d03_scale
+dim(k10_sig_NC_d03_scale)
+#image(t(scale(k10_sig_NC_d03_scale))[,order(k10_sig_NC_d03_scale$cluster)],main = "10 clusters scaled")
+
+#plot heatmap of K2
+#image(t(scale(res_sig_SD_NE_NC_D03_medians))[,order(k10_sig_NC_d03$cluster)],main = "4 clusters scaled")
+
+library(pheatmap)
+### Images for k10 D03 contrast #####
+
+k10_vst_SD_d03_mat <- cbind(vst_SD_d03_scaled,k10_sig_NC_d03_scale$cluster)
+ord <- order(k10_vst_SD_d03_mat[,17])
+k10_vst_SD_d03_mat <- k10_vst_SD_d03_mat[ord,]
+rowanno <- data.frame(Clusters= factor(k10_vst_SD_d03_mat[,17]))
+kcolors <-met.brewer(name = "OKeeffe1",n = 10,type = 'discrete')
+length(kcolors)
+names(kcolors) <- unique(rowanno$Clusters)
+
+pheatmap(k10_vst_SD_d03_mat[,1:17],
+         cluster_rows = F,
+         cluster_cols = F,
+         border_color = NA,
+         show_colnames = T,
+         show_rownames = F,
+         annotation_row = rowanno)
+k10_vst_SD_d03_centers <- k10_sig_NC_d03_scale$centers
+k10_vst_centers_d03_df <- data.frame(k10_sig_NC_d03_scale$centers, group= c(1:10))
+ggparcoord(k10_vst_centers_d03_df, columns = 1:17, groupColumn = 'group') + facet_wrap(~group, nrow = 5)
+k10_sig_NC_d03_scale$size
+k10_vst_centers_medians <- data.frame(A=rowMedians(k10_vst_SD_d03_centers[,1:3]),B=rowMedians(k10_vst_SD_d03_centers[,4:6]),C=rowMedians(k10_vst_SD_d03_centers[,10:10]),D=rowMedians(k10_vst_SD_d03_centers[,11:13]),E=rowMedians(k10_vst_SD_d03_centers[,14:16]),group = c(1:10))
+library(hrbrthemes)
+library(GGally)
+library(viridis)
+ggparcoord(k10_vst_centers_medians, columns = 1:5, groupColumn = 'group', showPoints = T, title = "k10 d03 vst scaling") 
+ggparcoord(k10_vst_centers_medians, columns = 1:5, groupColumn = 'group', showPoints = T, title = "k10 d03 vst scaling")+ facet_wrap(~group)
+##identifying all the genes in each cluster
+k10_SD_vst_d03_clusters <- k10_sig_NC_d03_scale$cluster
+str(k10_SD_vst_d03_clusters)
+#Subset of genes from each cluster
+k10_SD_vst_d03_clusters_1 <- names(k10_SD_vst_d03_clusters[which(k10_SD_vst_d03_clusters==1)])
+k10_SD_vst_d03_clusters_2 <- names(k10_SD_vst_d03_clusters[which(k10_SD_vst_d03_clusters==2)])
+k10_SD_vst_d03_clusters_3 <- names(k10_SD_vst_d03_clusters[which(k10_SD_vst_d03_clusters==3)])
+k10_SD_vst_d03_clusters_4 <- names(k10_SD_vst_d03_clusters[which(k10_SD_vst_d03_clusters==4)])
+k10_SD_vst_d03_clusters_5 <- names(k10_SD_vst_d03_clusters[which(k10_SD_vst_d03_clusters==5)])
+k10_SD_vst_d03_clusters_6 <- names(k10_SD_vst_d03_clusters[which(k10_SD_vst_d03_clusters==6)])
+k10_SD_vst_d03_clusters_7 <- names(k10_SD_vst_d03_clusters[which(k10_SD_vst_d03_clusters==7)])
+k10_SD_vst_d03_clusters_8 <- names(k10_SD_vst_d03_clusters[which(k10_SD_vst_d03_clusters==8)])
+k10_SD_vst_d03_clusters_9 <- names(k10_SD_vst_d03_clusters[which(k10_SD_vst_d03_clusters==9)])
+k10_SD_vst_d03_clusters_10 <- names(k10_SD_vst_d03_clusters[which(k10_SD_vst_d03_clusters==10)])
+#########Save the heatmap kmeans clustering#################################
+save(list = c("heat_k10","k10_centers","df_SD_d03","df_SD_d03_mean","k10_SD_vst_d03_clusters","k10_SD_vst_d03_clusters_1","k10_SD_vst_d03_clusters_2","k10_SD_vst_d03_clusters_3","k10_SD_vst_d03_clusters_4","k10_SD_vst_d03_clusters_5","k10_SD_vst_d03_clusters_6","k10_SD_vst_d03_clusters_7","k10_SD_vst_d03_clusters_8","k10_SD_vst_d03_clusters_9","k10_SD_vst_d03_clusters_10"),file = "~/Documents/Git/MSC_Bulk/RNA_seq_Data/SD_NE_Kmeans10_VST_variables.RData")
+
+
+#Visualize clusters
+pheatmap(NC_medians_ressig_D03_padj0.05log0.5_scaled[order(kx_means_lfc$cluster),],
+         cluster_rows =F,
+         cluster_cols = F,
+         show_rownames =F,
+         show_colnames =T,
+         scale ="row")
+
+
+###plotting MA of genes that were significantly altered at day 3
+plotMA(res_SD_NoExtra_D03_a05)
+
+
+##All significant normalized counts table
+
+dim(res_SD_NE_D0_D3_padj0.05_anno) #12686 genes pass the 0.05 threshold
+res_SD_NE_D0_D3_padj0.05_anno_ordered <- res_SD_NE_D0_D3_padj0.05_anno[order(res_SD_NE_D0_D3_padj0.05_anno$padj),]
+res_SD_NE_D0_D3_padj0.05_anno_ordered
+res_sig_SD_NE_normalized_counts_D03 <- normalized_counts_SD_NoExtra[res_SD_NE_D0_D3_padj0.05_anno_ordered$ensgene,] 
+##Significant in each direction up or down regulated
+res_sig_SD_NE_d03_down <-res_SD_NE_D0_D3_padj0.05_anno[which(res_SD_NE_D0_D3_padj0.05_anno$log2FoldChange<0),] 
+dim(res_sig_SD_NE_d03_down) #6358 10
+res_sig_SD_NE_d03_up <-res_SD_NE_D0_D3_padj0.05_anno[which(res_SD_NE_D0_D3_padj0.05_anno$log2FoldChange>0),]
+dim(res_sig_SD_NE_d03_up) #6328 10
+
+
+#Normalized counts table for up and down regulations
+res_sig_down_normalized_counts_SD_NE_D03 <- normalized_counts_SD_NoExtra[res_sig_SD_NE_d03_down$ensgene,] 
+
+rownames(res_sig_down_normalized_counts_SD_NE_D03) <- res_sig_SD_NE_d03_down$symbol
+dim(res_sig_SD_NE_d03_up)
+res_sig_up_normalized_counts_SD_NE_D03 <- normalized_counts_SD_NoExtra[res_sig_SD_NE_d03_up$ensgene,]  
+dim(res_sig_up_normalized_counts_SD_NE_D03)#6328 up regulated genes
+rownames(res_sig_up_normalized_counts_SD_NE_D03) <- res_sig_SD_NE_d03_up$symbol
+
+
+###Save all teh D03 variables
+save(list = c("res_SD_NoExtra_D03_a05","res_sig_SD_NE_d03_up","res_SD_NoExtra_D03_a05_anno","res_SD_NE_D0_D3_padj0.05_anno","res_SD_NE_D0_D3_padj0.05_anno_ordered","res_sig_SD_NE_normalized_counts_D03","res_sig_SD_NE_d03_down","res_sig_SD_NE_d03_up","res_sig_down_normalized_counts_SD_NE_D03","res_sig_up_normalized_counts_SD_NE_D03"),file = "~/Documents/Git/MSC_Bulk/RNA_seq_Data/SD_NE_d03_variables.RData")
+```
+```{r visualize day 0 vs day 3 comparison}
+load(file = "~/Documents/Git/MSC_Bulk/RNA_seq_Data/SD_NE_d03_variables.RData")
+library(ComplexHeatmap)
+library(pheatmap)
+library(tidyverse)
+library(ggplot2)
+library(GGally)
+#BiocManager::install('ColorBrewer')
+library(colorspace)
+#Down regulated Genes heatmap
+pheatmap(res_sig_SD_NE_normalized_counts_D03,
+         color = heat_colors,
+         cluster_rows =T,
+         show_rownames =F,
+         annotation = select(coldata_SD_Noextra, Day),
+         scale ="row")
+#upregulated genes heat map(This one is important if IU can see which genes are up and stayup)
+pheatmap(res_sig_up_normalized_counts_SD_NE_D03,
+         cluster_rows =T,
+         show_rownames =F,
+         cluster_cols = F,
+         annotation = select(coldata_SD_Noextra, Day),
+         scale ="row")
+#only the d0 and d3 samples
+pheatmap(res_sig_up_normalized_counts_SD_NE_D03[,1:6],
+         cluster_rows =T,
+         show_rownames =F,
+         annotation = select(coldata_SD_Noextra, Day),
+         scale ="row")
+
+
+########Up regulated genes is our starting point I will go thorugh an look at which genes stay up#######
+res_sig_up_NC_SD_NE_D03_A <- res_sig_up_normalized_counts_SD_NE_D03[,1:3]
+res_sig_up_NC_SD_NE_D03_B <- res_sig_up_normalized_counts_SD_NE_D03[,4:6]
+res_sig_up_NC_SD_NE_D03_C <- res_sig_up_normalized_counts_SD_NE_D03[,7:10]
+res_sig_up_NC_SD_NE_D03_D <- res_sig_up_normalized_counts_SD_NE_D03[,11:13]
+res_sig_up_NC_SD_NE_D03_E <- res_sig_up_normalized_counts_SD_NE_D03[,14:16]
+rowMeans(res_sig_up_NC_SD_NE_D03_A)
+summary(rowMeans(res_sig_up_NC_SD_NE_D03_B)-rowMeans(res_sig_up_NC_SD_NE_D03_A))
+     # Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+     #  2.4      72.1     407.9    3012.7    1347.4 1428024.9 
+summary(rowMeans(res_sig_up_NC_SD_NE_D03_C)-rowMeans(res_sig_up_NC_SD_NE_D03_A)>0)
+#276 genes fall below the MSC by day 7  the remainig 6052 are high
+which(((rowMeans(res_sig_up_NC_SD_NE_D03_C)-rowMeans(res_sig_up_NC_SD_NE_D03_A)>0)))
+      
+summary((rowMeans(res_sig_up_NC_SD_NE_D03_D)-rowMeans(res_sig_up_NC_SD_NE_D03_A)>0))
+
+res_sig_up_NC_SD_NE_D03_means <- data.frame(A=rowMeans(res_sig_up_NC_SD_NE_D03_A),B=rowMeans(res_sig_up_NC_SD_NE_D03_B),C=rowMeans(res_sig_up_NC_SD_NE_D03_C),D=rowMeans(res_sig_up_NC_SD_NE_D03_D),E=rowMeans(res_sig_up_NC_SD_NE_D03_E), row.names = rownames(res_sig_up_normalized_counts_SD_NE_D03))
+res_sig_up_NC_SD_NE_D03_means
+
+####Runn Kmeans clustering on the significantly up regulated genes
+head(res_sig_up_normalized_counts_SD_NE_D03)
+library(ComplexHeatmap)
+library(pheatmap)
+library(tidyverse)
+heat_k10 <- pheatmap(res_sig_SD_NE_normalized_counts_D03,
+         kmeans_k = 10,
+         cutree_rows = 10,
+         cluster_rows =T,
+         show_rownames =F,
+         cluster_cols = F,
+         annotation = select(coldata_SD_Noextra, Day),
+         scale ="row")
+heat_k10
+heat_k10$kmeans
+
+#Cluster 3 from this one is day 7-14 increase
+#cluster 4 is mostly a day 4 increase only 
+##I will try to run the clustering for these 
+k10_centers <- data.frame(heat_k10$kmeans$centers)
+k10_sizes <- data.frame(heat_k10$kmeans$size)
+k10_sizes
+k10_centers_t <- data.frame(t(heat_k10$kmeans$centers))
+k10_centers$group <- as.factor(c(1:10))
+k10_centers_t$Days <- as.factor(c(rep(0,3),rep(3,3),rep(7,4),rep(10,3),rep(14,3)))
+
+ggparcoord(k10_centers, columns = 1:16, groupColumn = 'group') + facet_wrap(~group, nrow = 5)
+ggparcoord(k10_centers_t, columns = 1:10, groupColumn = 'Days') 
+head(k10_centers)
+
+df_SD_d03 <- data.frame(A=unlist(k10_centers_t[1:3,1:10]))
+df_SD_d03
+df_SD_d03$B <-unlist(k10_centers_t[4:6,1:10])
+df_SD_d03$C <-unlist(k10_centers_t[7:9,1:10])
+df_SD_d03$D <-unlist(k10_centers_t[11:13,1:10])
+df_SD_d03$E <-unlist(k10_centers_t[14:16,1:10])
+df_SD_d03$group <- as.factor(c(rep(1,3),rep(2,3),rep(3,3),rep(4,3),rep(5,3),rep(6,3),rep(7,3),rep(8,3),rep(9,3),rep(10,3)))
+
+ggparcoord(df_SD_d03, columns = 1:5, groupColumn = 'group', showPoints = T)
+
+##Trying with the  means instead
+
+df_SD_d03_mean <- data.frame(A=rowMeans(k10_centers[1:3]),B=rowMeans(k10_centers[4:6]),C=rowMeans(k10_centers[7:10]),D=rowMeans(k10_centers[11:13]),E=rowMeans(k10_centers[14:16]))
+df_SD_d03_mean$group <- as.factor(c(1:10))
+#Plot the means
+#add size to the plots 
+df_SD_d03_mean$size <- paste0("n=",k10_sizes[,1])
+str(df_SD_d03_mean)
+ggparcoord(df_SD_d03_mean, columns = 1:5, groupColumn = 'group', showPoints = T) + facet_wrap(~group, nrow = 3) + geom_text(df_SD_d03_mean$size, mapping= aes(x=1.8, y=5, label=n), 
+                    colour="black", inherit.aes=FALSE, parse=FALSE)
+
+##identifying all the genes in each cluster
+k10_SD_d03_clusters <- heat_k10$kmeans$cluster
+str(k10_SD_d03_clusters)
+#Subset of genes from each cluster
+k10_SD_d03_clusters_1 <- names(k10_SD_d03_clusters[which(k10_SD_d03_clusters==1)])
+k10_SD_d03_clusters_2 <- names(k10_SD_d03_clusters[which(k10_SD_d03_clusters==2)])
+k10_SD_d03_clusters_3 <- names(k10_SD_d03_clusters[which(k10_SD_d03_clusters==3)])
+k10_SD_d03_clusters_4 <- names(k10_SD_d03_clusters[which(k10_SD_d03_clusters==4)])
+k10_SD_d03_clusters_5 <- names(k10_SD_d03_clusters[which(k10_SD_d03_clusters==5)])
+k10_SD_d03_clusters_6 <- names(k10_SD_d03_clusters[which(k10_SD_d03_clusters==6)])
+k10_SD_d03_clusters_7 <- names(k10_SD_d03_clusters[which(k10_SD_d03_clusters==7)])
+k10_SD_d03_clusters_8 <- names(k10_SD_d03_clusters[which(k10_SD_d03_clusters==8)])
+k10_SD_d03_clusters_9 <- names(k10_SD_d03_clusters[which(k10_SD_d03_clusters==9)])
+k10_SD_d03_clusters_10 <- names(k10_SD_d03_clusters[which(k10_SD_d03_clusters==10)])
+#########Save the heatmap kmeans clustering#################################
+save(list = c("heat_k10","k10_centers","df_SD_d03","df_SD_d03_mean","k10_SD_d03_clusters","k10_SD_d03_clusters_1","k10_SD_d03_clusters_2","k10_SD_d03_clusters_3","k10_SD_d03_clusters_4","k10_SD_d03_clusters_5","k10_SD_d03_clusters_6","k10_SD_d03_clusters_7","k10_SD_d03_clusters_8","k10_SD_d03_clusters_9","k10_SD_d03_clusters_10"),file = "~/Documents/Git/MSC_Bulk/RNA_seq_Data/SD_NE_Kmeans10_variables.RData")
+
+##### looking for known genes to see if the patterns have anything interesting
+grep(pattern = "PPAR",names(k10_SD_d03_clusters))
+k10_SD_d03_clusters[1898] #PPARG cluster 1
+grep(pattern = "LEP",names(k10_SD_d03_clusters)) #3822 4832
+k10_SD_d03_clusters[c(3822,4832)] # Lep cluster 4 lepROT cluster 2
+grep(pattern = "FAB",names(k10_SD_d03_clusters)) #25 3609
+k10_SD_d03_clusters[c(25,3609)]#FABP$ cluster 4
+Adipos <- grep(pattern = "ADIPO",names(k10_SD_d03_clusters)) #3822 4832
+k10_SD_d03_clusters[Adipos] #AdipoQ cluster 4
+CEBPs <- grep(pattern = "CEBP",names(k10_SD_d03_clusters)) #3822 4832
+k10_SD_d03_clusters[CEBPs] #CEBPA cluster 4
+
+######Run Kegg on the clusters#############
+library(clusterProfiler)
+library(enrichplot)
+library(org.Hs.eg.db)
+library(ggplot2)
+# we use ggplot2 to add x axis labels (ex: ridgeplot)
+head(res_SD_NE_D0_D3_padj0.05_anno)
+SD_lfc_D03 <- res_SD_NE_D0_D3_padj0.05_anno$log2FoldChange
+names(SD_lfc_D03) <- res_SD_NE_D0_D3_padj0.05_anno$symbol
+SD_lfc_D03<-na.omit(SD_lfc_D03)
+# sort the list in decreasing order (required for clusterProfiler)
+SD_lfc_D03 = sort(SD_lfc_D03, decreasing = TRUE)
+keytypes(org.Hs.eg.db)
+head(SD_lfc_D03)
+#gene set enrichment
+gse_SD_NE_D03 <- gseGO(geneList=SD_lfc_D03, 
+             ont ="ALL", 
+             keyType = "SYMBOL", 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = org.Hs.eg.db, 
+             pAdjustMethod = "none")
+gse_SD_NE_D03
+
+dotplot(gse_SD_NE_D03,showCategory=30) + ggtitle("GSEA standard Diff Day 0 to day 3")
+
+
+#######################Go of cluster 1, 2, 4, 6, and 8 which is MSC specific first subset the SD_lfc_d03 dataset###############
+SD_lfc_D03_k10_c1 <- SD_lfc_D03[which(names(SD_lfc_D03) %in% k10_SD_d03_clusters_1)]#increase day 7 and stays up
+SD_lfc_D03_k10_c2 <- SD_lfc_D03[which(names(SD_lfc_D03) %in% k10_SD_d03_clusters_2)]#IDK(maybe ggroup 4 extras)
+SD_lfc_D03_k10_c3 <- SD_lfc_D03[which(names(SD_lfc_D03) %in% k10_SD_d03_clusters_3)]
+SD_lfc_D03_k10_c4 <- SD_lfc_D03[which(names(SD_lfc_D03) %in% k10_SD_d03_clusters_4)]
+SD_lfc_D03_k10_c5 <- SD_lfc_D03[which(names(SD_lfc_D03) %in% k10_SD_d03_clusters_5)] #decreases by day7-10
+SD_lfc_D03_k10_c6 <- SD_lfc_D03[which(names(SD_lfc_D03) %in% k10_SD_d03_clusters_6)]#increase day 3 stay up
+SD_lfc_D03_k10_c8 <- SD_lfc_D03[which(names(SD_lfc_D03) %in% k10_SD_d03_clusters_8)]#MSC specific
+##############plot Go data##############
+gse_SD_NE_D03_k10_c1 <- gseGO(geneList=SD_lfc_D03_k10_c1, 
+             ont ="ALL", 
+             keyType = "SYMBOL", 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = org.Hs.eg.db, 
+             pAdjustMethod = "none")
+
+dotplot(gse_SD_NE_D03_k10_c1,showCategory=30) + ggtitle("GSEA standard Diff Day 0 to day 3 cluster 1")
+####GO K10 C2
+gse_SD_NE_D03_k10_c2 <- gseGO(geneList=SD_lfc_D03_k10_c2, 
+             ont ="ALL", 
+             keyType = "SYMBOL", 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = org.Hs.eg.db, 
+             pAdjustMethod = "none")
+
+dotplot(gse_SD_NE_D03_k10_c2,showCategory=18) + ggtitle("GSEA standard Diff Day 0 to day 3 cluster 2")
+
+####GO K10 C3
+gse_SD_NE_D03_k10_c3 <- gseGO(geneList=SD_lfc_D03_k10_c3, 
+             ont ="ALL", 
+             keyType = "SYMBOL", 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = org.Hs.eg.db, 
+             pAdjustMethod = "none")
+
+dotplot(gse_SD_NE_D03_k10_c3,showCategory=30) + ggtitle("GSEA standard Diff Day 0 to day 3 cluster 3")
+###GO K10 C4
+SD_lfc_D03_k10_c4 <- SD_lfc_D03_k10_c4[-which(is.na(names(SD_lfc_D03_k10_c4)))] # remove NA genes that are just there for no reasons
+gse_SD_NE_D03_k10_c4 <- gseGO(geneList=SD_lfc_D03_k10_c4, 
+             ont ="ALL", 
+             keyType = "SYMBOL", 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = org.Hs.eg.db, 
+             pAdjustMethod = "none")
+gse_SD_NE_D03_k10_c4@result
+dotplot(gse_SD_NE_D03_k10_c4,showCategory=50) +  ggtitle("GSEA standard Diff Day 0 to day 3 cluster 4") + scale_y_discrete(labels=function(x) str_wrap(x, width=40))
+
+##Trying to better visualize this cluster
+library(rrvgo)
+simMatrix_SD_NE_k10_d03_c4 <- calculateSimMatrix(gse_SD_NE_D03_k10_c4@result$ID, orgdb="org.Hs.eg.db",
+                                ont="BP",
+                                method="Rel")
+scores_simmatrix_k10_c4 <- setNames(-log10(gse_SD_NE_D03_k10_c4@result$qvalues), gse_SD_NE_D03_k10_c4@result$ID)
+reducedTerms_SD_NE_d03_k10_c4 <- reduceSimMatrix(simMatrix_SD_NE_k10_d03_c4, scores_simmatrix_k10_c4, threshold = 0.7, orgdb = "org.Hs.eg.db")
+heatmapPlot(simMatrix_SD_NE_k10_d03_c4,reducedTerms_SD_NE_d03_k10_c4,annotateParent = T,annotationLabel = "parentTerm",fontsize= 6) # this is super noisy
+scatterPlot(simMatrix_SD_NE_k10_d03_c4,reducedTerms_SD_NE_d03_k10_c4)
+treemapPlot(reducedTerms_SD_NE_d03_k10_c4)
+####GO K10 C5
+gse_SD_NE_D03_k10_c5 <- gseGO(geneList=SD_lfc_D03_k10_c5, 
+             ont ="ALL", 
+             keyType = "SYMBOL", 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = org.Hs.eg.db, 
+             pAdjustMethod = "none")
+
+dotplot(gse_SD_NE_D03_k10_c5,showCategory=30) + ggtitle("GSEA standard Diff Day 0 to day 3 cluster 5")
+
+######GO k10 c6############
+gse_SD_NE_D03_k10_c6 <- gseGO(geneList=SD_lfc_D03_k10_c6, 
+             ont ="ALL", 
+             keyType = "SYMBOL", 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = org.Hs.eg.db, 
+             pAdjustMethod = "none")
+
+dotplot(gse_SD_NE_D03_k10_c6,showCategory=35) + ggtitle("GSEA standard Diff Day 0 to day 3 cluster 6")
+BiocManager::install('enrichplot',force = T)
+library(enrichplot)
+enrichplot::ridgeplot(gse_SD_NE_D03_k10_c6,showCategory = 30)
+
+#piositive regulaiton of lipid was noted in theis one
+####GO K10 C7
+gse_SD_NE_D03_k10_c7 <- gseGO(geneList=SD_lfc_D03_k10_c7, 
+             ont ="ALL", 
+             keyType = "SYMBOL", 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = org.Hs.eg.db, 
+             pAdjustMethod = "none")
+
+dotplot(gse_SD_NE_D03_k10_c2,showCategory=18) + ggtitle("GSEA standard Diff Day 0 to day 3 cluster 2")
+######Go k10 C8
+gse_SD_NE_D03_k10_c8 <- gseGO(geneList=SD_lfc_D03_k10_c8, 
+             ont ="ALL", 
+             keyType = "SYMBOL", 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = org.Hs.eg.db, 
+             pAdjustMethod = "none")
+
+dotplot(gse_SD_NE_D03_k10_c8,showCategory=30) + ggtitle("GSEA standard Diff Day 0 to day 3 cluster 8")
+####### Trying again with fewer clusters####################
+heat_k5 <- pheatmap(res_sig_up_normalized_counts_SD_NE_D03,
+         kmeans_k = 5,
+         cluster_rows =T,
+         show_rownames =F,
+         cluster_cols = F,
+         annotation = select(coldata_SD_Noextra, Day),
+         scale ="row")
+heat_k5$kmeans
+#Cluster 2 from k5 is day 3 only
+```
+##Keg analysis of Day 0 3 comparision 
+```{r}
+##load vaiable
+#load(file = "~/Documents/Git/MSC_Bulk/RNA_seq_Data/SD_NE_Kmeans6_VST_variables.RData")
+head(k6_sig_NC_d03_scale)#kmeans results from the vst scaled data for day 03 contrast with 6 clusters
+k6_sig_NC_d03_scale$size
+# [1] 2987 2309 2567  981 2496 1257
+######Subsetting significant table and vst counts table by k6 genes######
+res_SD_NoExtra_D03_a05_annoDbi_padj05 #sig results to subset
+res_sig_SD_NE_normalized_counts_D03 # vst normalized count subset
+#Subset of genes from each cluster
+res_SD_d03_vst_k6_c1 <- res_SD_NoExtra_D03_a05_annoDbi_padj05[which(rownames(res_SD_NoExtra_D03_a05_annoDbi_padj05) %in% k6_SD_vst_d03_clusters_1),]
+res_SD_d03_vst_k6_c2 <- res_SD_NoExtra_D03_a05_annoDbi_padj05[which(rownames(res_SD_NoExtra_D03_a05_annoDbi_padj05) %in% k6_SD_vst_d03_clusters_2),]
+res_SD_d03_vst_k6_c3 <- res_SD_NoExtra_D03_a05_annoDbi_padj05[which(rownames(res_SD_NoExtra_D03_a05_annoDbi_padj05) %in% k6_SD_vst_d03_clusters_3),] 
+res_SD_d03_vst_k6_c4 <- res_SD_NoExtra_D03_a05_annoDbi_padj05[which(rownames(res_SD_NoExtra_D03_a05_annoDbi_padj05) %in% k6_SD_vst_d03_clusters_4),] 
+res_SD_d03_vst_k6_c5 <- res_SD_NoExtra_D03_a05_annoDbi_padj05[which(rownames(res_SD_NoExtra_D03_a05_annoDbi_padj05) %in% k6_SD_vst_d03_clusters_5),] 
+res_SD_d03_vst_k6_c6 <- res_SD_NoExtra_D03_a05_annoDbi_padj05[which(rownames(res_SD_NoExtra_D03_a05_annoDbi_padj05) %in% k6_SD_vst_d03_clusters_6),] 
+       
+res_SD_d03_vst_k6_c2[order(res_SD_d03_vst_k6_c2$padj,decreasing = F),]    
+grep(pattern = "ADIPOQ",res_SD_d03_vst_k6_c1$symbol)
+# ADIPOQ and FABP4 are in cluster 1
+                         
+
+
+#### 6 cluster log fold change cut off ######3
+##load vaiable
+#load(file = "~/Documents/Git/MSC_Bulk/RNA_seq_Data/SD_NE_Kmeans6_VST_variables.RData")
+head(k6_sig_NC_d03_scale)#kmeans results from the vst scaled data for day 03 contrast with 6 clusters
+k6_sig_NC_d03_scale$size
+# [1] 2987 2309 2567  981 2496 1257
+######Subsetting significant table and vst counts table by k6 genes######
+res_SD_NoExtra_D03_a05_annoDbi_padj05 #sig results to subset
+res_sig_SD_NE_normalized_counts_D03 # vst normalized count subset
+#Subset of genes from each cluster
+res_SD_d03_vst_l2fc_k6_c1 <- res_SD_NoExtra_D03_a05_annoDbi_padj05[which(rownames(res_SD_NoExtra_D03_a05_annoDbi_padj05) %in% k6_vst_SD_d03_l2fc_clusters_1),]
+res_SD_d03_vst_l2fc_k6_c2 <- res_SD_NoExtra_D03_a05_annoDbi_padj05[which(rownames(res_SD_NoExtra_D03_a05_annoDbi_padj05) %in% k6_vst_SD_d03_l2fc_clusters_2),]
+res_SD_d03_vst_l2fc_k6_c3 <- res_SD_NoExtra_D03_a05_annoDbi_padj05[which(rownames(res_SD_NoExtra_D03_a05_annoDbi_padj05) %in% k6_vst_SD_d03_l2fc_clusters_3),] 
+res_SD_d03_vst_l2fc_k6_c4 <- res_SD_NoExtra_D03_a05_annoDbi_padj05[which(rownames(res_SD_NoExtra_D03_a05_annoDbi_padj05) %in% k6_vst_SD_d03_l2fc_clusters_4),] 
+res_SD_d03_vst_l2fc_k6_c5 <- res_SD_NoExtra_D03_a05_annoDbi_padj05[which(rownames(res_SD_NoExtra_D03_a05_annoDbi_padj05) %in% k6_vst_SD_d03_l2fc_clusters_5),] 
+res_SD_d03_vst_l2fc_k6_c6 <- res_SD_NoExtra_D03_a05_annoDbi_padj05[which(rownames(res_SD_NoExtra_D03_a05_annoDbi_padj05) %in% k6_vst_SD_d03_l2fc_clusters_6),] 
+       
+res_SD_d03_vst_l2fc_k6_c2<- res_SD_d03_vst_l2fc_k6_c2[order(res_SD_d03_vst_l2fc_k6_c2$log2FoldChange,decreasing = T),]    
+grep(pattern = "ADIPOQ",res_SD_d03_vst_l2fc_k6_c2$symbol)
+res_SD_d03_vst_l2fc_k6_c2[1000:1500,]
+# ADIPOQ and FABP4 are in cluster 2
+```  
+###KML longitudinal k means 
+## Kmaens with kml package for longitudinal studies
+KML is a longitudinal K-means test for trends in time course data. The [paper](https://link.springer.com/article/10.1007/s00180-009-0178-4) is here It is comparable ot Proc Traj and non-parametiric algorithms like standard k -means. There is some discussiuon about the best wat to do longitudinal analysis this [comparison paper of longitudinal clustering apporaches][https://www.tandfonline.com/doi/full/10.1080/03610918.2020.1861464] will help to compare this. 
+```{r kml test}
+#Trying withthe kmeans longitudinal kmeans again
+#BiocManager::install("kml")
+library(kml)
+library(kml3d)
+library(tidyverse)
+library(readr)
+
+
+## Examples
+data("epipageShort", package = "kml")
+
+head(epipageShort)# this has ID one factor(gender) and then 4 time points sdq3.4.5.8, I think it uses counts for the time points
+
+dim(epipageShort)
+str(epipageShort)
+#imupation used for missing data, without method it will run copymean to fill in any NAs there are also iterpolation methods like the linear method employeed in the second example.
+imputation(as.matrix(epipageShort[, 3:6]))
+imputation(as.matrix(epipageShort[, 3:6]), method = "linearInterpol")
+
+#next create a cld object (cluster longdata object)
+cldSDQ <- cld(epipageShort, timeInData = 3:6)
+cldSDQ
+#Partitioning the data using kml. running it without the nbredraw will speed up the kml because it doesn't require as much processing
+kml(cldSDQ, nbRedraw = 2, toPlot = 'both')
+kml(cldSDQ)
+
+kml(cldSDQ, 4, parAlgo = parALGO(distance = function(x, y) cor(x, y),
+  saveFreq = 10))
+
+choice(cldSDQ)
+plotAllCriterion(cldSDQ)
+
+epipageShort$clusters <- getClusters(cldSDQ, 4)
+epipageGroupAD <- epipageShort[epipageShort$clusters %in% c("A", "D"),]
+summary(glm(clusters ~ gender, data = epipageGroupAD, family = "binomial"))
+###########Trying on my data##############
+# ## subseting data for adjusted logfold to minimize number of genes to look at. 
+head(res_sig_SD_NE_order_annoDbi)#annotated results from the vsd dataset
+res_sig_SD_NE_order_lfc0.5_annoDbi <- res_sig_SD_NE_order_annoDbi[which(abs(res_sig_SD_NE_order_annoDbi$log2FoldChange)>0.5),]
+str(res_sig_SD_NE_order_lfc0.5_annoDbi) #9873
+dim(res_sig_SD_NE_order_lfc0.5_annoDbi)#9873 7
+
+res_sig_SD_NE_vst_normdata_lfc0.5_anno <- res_sig_SD_NE_vst_normalized_data[which(rownames(res_sig_SD_NE_vst_normalized_data) %in% rownames(res_sig_SD_NE_order_lfc0.5_annoDbi)),]
+res_sig_SD_NE_vst_normalized_data <- as.data.frame(res_sig_SD_NE_vst_normalized_data)
+res_sig_SD_NE_vst_normdata_lfc0.5_anno$symbol <- res_sig_SD_NE_order_lfc0.5_annoDbi$symbol
+head(res_sig_SD_NE_vst_normdata_lfc0.5_anno)
+#Given that they treat each column as a time point I will make a table with the median for each day
+BiocManager::install("miscTools")
+library(miscTools)
+res_sig_SD_NE_vst_normdata_lfc0.5_anno_median <- data.frame(id=rownames(res_sig_SD_NE_vst_normdata_lfc0.5_anno),A=rowMedians(res_sig_SD_NE_vst_normdata_lfc0.5_anno[,1:3]),B=rowMedians(res_sig_SD_NE_vst_normdata_lfc0.5_anno[,4:6]),C=rowMedians(res_sig_SD_NE_vst_normdata_lfc0.5_anno[,7:10]),D=rowMedians(res_sig_SD_NE_vst_normdata_lfc0.5_anno[,11:13]),E=rowMedians(res_sig_SD_NE_vst_normdata_lfc0.5_anno[,14:16]),symbol=res_sig_SD_NE_vst_normdata_lfc0.5_anno$symbol)
+head(res_sig_SD_NE_vst_normdata_lfc0.5_anno_median)
+dim(res_sig_SD_NE_vst_normdata_lfc0.5_anno_median)
+
+# res_SD_NoExtra_D03_a05_annoDbi_padj05_logfold0.5 <- res_SD_NoExtra_D03_a05_annoDbi_padj05[which(abs(res_SD_NoExtra_D03_a05_annoDbi_padj05$log2FoldChange)>0.5),]
+# str(res_SD_NoExtra_D03_a05_annoDbi_padj05_logfold0.5)# down to 9170 genes. i will subset the vst normalized data to these genes as well. 
+
+
+str(res_SD_NoExtra_D03_a05_annoDbi)# Significant genes that pass -adj 0.05 
+str(res_sig_SD_NE_normalized_counts_D03) # all normalied counts 
+str(res_sig_SD_NE_NC_D03_medians)#Median table for all padj 0.05 
+str(res_SD_NE_D0_D3_padj0.05_lfc.5_annoDbi)# Significant genes that pass -adj 0.05 and lfc >0.5
+str(res_SD_NE_D0_D3_padj0.05_lfc.5_NC)
+str(NC_medians_ressig_D03_padj0.05log0.5)#Normcount table FUCK THIS TABLE DO NOT USE THIS SHIT USE ANY OF THE OTHER NORMALIZED DATA NTD VSD or the other one
+
+
+## Examples
+
+head(res_sig_SD_NE_vst_normdata_lfc0.5_anno_median)
+str(res_sig_SD_NE_vst_normdata_lfc0.5_anno_median)# Must make the ID colummn a factor
+res_sig_SD_NE_vst_normdata_lfc0.5_anno_median$id <- factor(res_sig_SD_NE_vst_normdata_lfc0.5_anno_median$id)
+res_sig_SD_NE_vst_normdata_lfc0.5_anno_median$symbol <- factor(res_sig_SD_NE_vst_normdata_lfc0.5_anno_median$symbol)
+str(res_sig_SD_NE_vst_normdata_lfc0.5_anno_median)
+
+# Taking only the top 2000 genes 
+res_sig_SD_NE_vst_normdata_lfc0.5_anno_median_top1k <- res_sig_SD_NE_vst_normdata_lfc0.5_anno_median[1:1000,]
+
+SD_NE_D014_top1k_scaled <- scale(res_sig_SD_NE_vst_normdata_lfc0.5_anno_median_top1k[,2:6])
+SD_NE_D014_top1k_scaled <- data.frame(id=rownames(SD_NE_D014_top1k_scaled),SD_NE_D014_top1k_scaled)
+head(SD_NE_D014_top1k_scaled)
+
+#Creating cluster longdata object
+cldSDQ_D014_SDNE_top1k <- cld(SD_NE_D014_top1k_scaled, timeInData = 2:6)
+cldSDQ_D014_SDNE_top1k
+#Run KML trajectory analysis
+#kml(cldSDQ_D014_SDNE_top2k, nbRedraw = 2, toPlot = 'both')
+kml(cldSDQ_D014_SDNE_top1k)
+
+kml(cldSDQ_D014_SDNE_top1k, 9, parAlgo = parALGO(distance = function(x, y) cor(x, y),
+  saveFreq = 10))
+
+choice(cldSDQ_D014_SDNE_top1k)
+plotAllCriterion(cldSDQ_D014_SDNE_top1k)
+
+res_sig_SD_NE_vst_normdata_lfc0.5_anno_median_top1k$clusters <- getClusters(cldSDQ_D014_SDNE_top1k, 5)
+summary(glm(clusters,data=res_sig_SD_NE_vst_normdata_lfc0.5_anno_median_top1k,family = "binomial"))
+epipageGroupAD <- epipageShort[epipageShort$clusters %in% c("A", "D"),]
+summary(glm(clusters ~ gender, data = epipageGroupAD, family = "binomial"))
+```
+###BigPint Visualization
+This is a really great package for clustering the was able to fix my issues with kmeans I will revisit after I look throught the patterns I got from the heatmap kmeans clustering 
+```{r bigPint clustering D03}
+
+####Testing out teh other DEG based parallel coordinates plot from this website: https://lindsayrutter.github.io/bigPint/articles/pipeline
+
+library(bigPint)
+library(dplyr)
+library(ggplot2)
+library(plotly)
+library(cowplot)
+## Try with my data
+### removing duplicates rows from sig up nromalized counts 
+res_sig_up_normcount_SD_NE_D03_nodups <- res_sig_up_normalized_counts_SD_NE_D03[-which(duplicated(rownames(res_sig_up_normalized_counts_SD_NE_D03))),]
+
+df_res_sig_up_NC_SD_NE_D03 <- data.frame(res_sig_up_normcount_SD_NE_D03_nodups) %>% rownames_to_column(var = "ID")
+colnames(df_res_sig_up_NC_SD_NE_D03)  <- c("ID", "AO.1","AO.2","AO.3", "BD.1", "BD.2", "BD.3", "CD.1", "CD.2", "CD.3", "CD.4", "DD.1", "DD.2", "DD.3", "ED.1", "ED.2", "ED.3")
+colnames(df_res_sig_up_NC_SD_NE_D03)
+str(df_res_sig_up_NC_SD_NE_D03) #6273 by 17  only 6058 of these are in the counts data so I will subset by the same
+
+#subsetting 2 conditions at time
+data_sd_ne_d03 <- df_res_sig_up_NC_SD_NE_D03 %>% select("ID",contains("AO"),contains("BD"))
+data_sd_ne_d03[,2:7] <- scale(data_sd_ne_d03[-1]) # scale the data to center around 0
+
+ret_SD_NE_d03 <- plotPCP(data = data_sd_ne_d03_4max, saveFile = F) 
+ret_SD_NE_d03
+
+#dataMetric creation
+which(duplicated(res_sig_SD_NE_d03_up$symbol))
+AO_BD <- res_sig_SD_NE_d03_up %>% select("symbol","log2FoldChange","lfcSE","stat","pvalue","padj")
+colnames(AO_BD) <- c("ID","logFC","logCPM","stat","pValue","FDR")
+str(AO_BD)
+dim(AO_BD)
+AO_BD <- AO_BD[-which(duplicated(AO_BD$ID)),] #removing dupliacated rows
+dataMetric_sd_ne_d03 <- list(AO_BD=AO_BD)
+names(dataMetric_sd_ne_d03)
+str(dataMetric_sd_ne_d03)
+
+#check that the IDs in the data object and data metric object are the same
+
+data_sd_ne_d03 <- data_sd_ne_d03[which(data_sd_ne_d03$ID %in% dataMetric_sd_ne_d03$AO_BD$ID),]
+dataMetric_sd_ne_d03$AO_BD <- dataMetric_sd_ne_d03$AO_BD[which(dataMetric_sd_ne_d03$AO_BD$ID %in% data_sd_ne_d03$ID),]
+dim(data_sd_ne_d03)
+dim(dataMetric_sd_ne_d03$AO_BD)
+#plot the counts with the cluster over it
+ret_SD_NE_d03_more <- plotPCP(data_sd_ne_d03, dataMetric_sd_ne_d03, threshVal = 0.1, lineSize = 0.3,
+  lineColor = "magenta", saveFile = FALSE)
+str(ret_SD_NE_d03_more)
+ret_SD_NE_d03_more[["AO_BD"]] + ggtitle("DEGs (FDR < 0.1)")
+#Seperate the major clusters
+ret_SD_NE_d03_split <- plotClusters(data_sd_ne_d03, dataMetric_sd_ne_d03, threshVal = 0.1, nC = 5,
+  colList = heat_colors, lineSize = 0.5, verbose = TRUE)
+ret_SD_NE_d03_split
+plot(ret_SD_NE_d03_split[["AO_BD_5"]])
+
+## Trying to remove data with really high counts
+summary(data_sd_ne_d03[,2:7])# Most samples are between -1 nd 1 but there are several that are 4 and higher in each sample so I will remove any rows that have counts more than 10
+
+data_sd_ne_d03_10max <- data_sd_ne_d03[-which(rowSums(data_sd_ne_d03[,2:7])>10),]
+data_sd_ne_d03_10max[,2:7] <- scale(data_sd_ne_d03_10max[-1])#rescale
+ret_SD_NE_d03 <- plotPCP(data = data_sd_ne_d03_10max, saveFile = F) 
+ret_SD_NE_d03
+#rescale 
+data_sd_ne_d03_2max <- data_sd_ne_d03[-which(rowSums(data_sd_ne_d03[,2:7])>2),]
+data_sd_ne_d03_2max[,2:7] <- scale(data_sd_ne_d03_2max[-1])
+
+ret_SD_NE_d03 <- plotPCP(data = data_sd_ne_d03_2max, saveFile = F) 
+ret_SD_NE_d03
+##Clustering the data
+data_sd_ne_d03_2max <- data_sd_ne_d03_2max[which(data_sd_ne_d03_2max$ID %in% dataMetric_sd_ne_d03$AO_BD$ID),]
+dataMetric_sd_ne_d03$AO_BD <- dataMetric_sd_ne_d03$AO_BD[which(dataMetric_sd_ne_d03$AO_BD$ID %in% data_sd_ne_d03_2max$ID),]
+dim(data_sd_ne_d03_2max)
+
+ret_SD_NE_d03_2max <- plotPCP(data_sd_ne_d03_2max, dataMetric_sd_ne_d03, threshVal = 0.1, lineSize = 0.3,
+  lineColor = "magenta", saveFile = FALSE)
+ret_SD_NE_d03_2max[["AO_BD"]] + ggtitle("DEGs (FDR < 0.1)")
+#Split the clusters
+ret_SD_NE_d03_split_2max_c5 <- plotClusters(data_sd_ne_d03_2max, dataMetric_sd_ne_d03, threshVal = 0.01, nC = 5,clusterAllData = F,
+  colList = met.brewer(name = 'Degas',type = 'discrete',n = 5), lineSize = 0.5, verbose = TRUE)
+plot_grid(ret_SD_NE_d03_split_2max_c5[["AO_BD_5"]])
+
+ret_SD_NE_d03_split_2max_c10 <- plotClusters(data_sd_ne_d03_2max, dataMetric_sd_ne_d03, threshVal = 0.01, nC = 10,clusterAllData = F,
+  colList = met.brewer(name = 'Degas',type = 'continuous',n = 10), lineSize = 0.5, verbose = TRUE)
+
+plot_grid(ret_SD_NE_d03_split_2max_c10[["AO_BD_10"]])
+
+##Isolate genes from each cluster
+
+```
+####Top Variance Genes
+
+```{r top Variance genes}
+library("genefilter")
+#Lets us thee variance tables to get the samples that had the biggest discrepencey for day 0 to day 14. Then crease a heatmap to visualize the top genes that plat this role. We can use this to see which of the MSC s playted a larger role in the definithion of MSCs by what genes 
+VarGenes <- head(order(rowVars(assay(vsd_TC)),decreasing = TRUE),50)
+
+#Create a matrix of the top genes 
+VG_mat  <- assay(vsd_TC)[VarGenes,]
+head(vsd_TC)
+VG_mat  <- VG_mat - rowMeans(VG_mat)
+anno <- as.data.frame(colData(vsd_TC)[, c("condition","Time")])
+pheatmap(VG_mat, annotation_col = anno)
+```
+##Checking for White/Beige/Brown Adipose markers
+One thing that I wanted to know is if my samples are closer to one lineage of adipocytes. To do this I will look at expression of crucial adipogenic markers and segment them by adipocyte type. This paper looks at diferentially expressed genes from MSC to [adipocyte][https://onlinelibrary.wiley.com/doi/full/10.1002/jcp.25472], this paper says that the most differentiatlly xpressed genes form BM0MSC to adipocyte are 
+    UPREGULATE: LPL, FABP4, TIMP4, ADIPOQ, PLIN1, AOC3, PPP1R1A, ADH1B,
+    DOWN REULATED:  CDC42EP1, FHL2, HLA-L, GNB2, PKN1, AP2S1, BGN, CHI3L1(this one may be a result of the MSCs used by this paper being BM derived) 
+This paper looks at [3t3-l1 to adipocytes][https://www.frontiersin.org/articles/10.3389/fmolb.2020.564339/full]:
+    sugests some calcium signaling is altered in the conversion to adipocytes 
+      up:Trpv1, Trpv2, Trpv6, and Trpc1 (trpv2 adn Trpv4 are increased in WAT for db/db or DIO mice) 
+      down: Trpv4, Trpm4, Trpm5, and Trpm7
+This paper does a comprehensive look at several [genes seen in each type of adipocyte,[beige brown][https://www.frontiersin.org/articles/10.3389/fendo.2021.599134/full], [white/beige/brown][https://www.frontiersin.org/articles/10.3389/fendo.2021.599134/full], this [venndiagram][https://www.frontiersin.org/files/Articles/599134/fendo-12-599134-HTML/image_m/fendo-12-599134-g001.jpg] shows where the gnes fall
+ * White:
+    * OB(leptin)
+    * Asc1/SLC7a10
+    * Fabp4
+    * Lpl
+    * Mpzl2
+    * Nr1H3/Lxra
+    * Nrip1/Rip140
+    * Rb1
+    * Rbl1
+    * Resistin
+    * Serpina3K
+    Tcf21
+    Wdnm1Like
+  white/Beige:
+    Ebf3
+    Hoxc8
+    Hoxc9
+    Pdgfralpha
+  beige
+```{r gene expression of adipocyte types}
+head(res_SD_NoExtra_alph05_anno)
+vsd_SD_NE_D014_mat_normdata_annoDbi
+white_genes <- c("LEP","ASC1","SLC7A10","FABP4","LPL","MPZL2","NR1H3","LXRA","NRIP1","RIP140","RB1","RBL1","RESISTIN","SERPINA3K","TCF21","WDNM1LIKE","EBF3","HOXC8","HOXC9","PDGFRA","PPARG","DICER1","CEBPA","ANGPTL4","TIMP4","AOC3","ADH1B","PREF1")
+WG_SD <-grep(vsd_SD_NE_D014_mat_normdata_annoDbi$symbol, pattern = paste(white_genes,collapse = "|"))
+WG_SD_anno <- vsd_SD_NE_D014_mat_normdata_annoDbi[WG_SD,]
+length(white_genes)
+
+Beige_genes <- c("AQP7","ASC1","CAR4","CD137","CITED1","EAR2","NR2F6","SHOX2","SLC27A1","SP100","TBX1","TMEM26","CIDEA","COX7A","EPSTI1","FGF21","HSPB7","KCNK3","LHX8","KLF11")
+BeG_SD <-grep(vsd_SD_NE_D014_mat_normdata_annoDbi$symbol, pattern = paste(Beige_genes,collapse = "|"))
+BeG_SD_anno <- vsd_SD_NE_D014_mat_normdata_annoDbi[BeG_SD,]
+length(Beige_genes)
+Brown_genes <- c("BMP7","EBF2","EDNRB","EVA1","MIR133B","MIR206","MYF5","PDK4","PREX1","ZIC1","UCP1","PPARA","CIDEA")
+BrG_SD <-grep(vsd_SD_NE_D014_mat_normdata_annoDbi$symbol, pattern = paste(Brown_genes,collapse = "|"))
+BrG_SD_anno <- vsd_SD_NE_D014_mat_normdata_annoDbi[BrG_SD,]
+length(BrG_SD_anno)
+
+#BrG_SD_anno
+```
+```{r visualizing Adpocyte typesday 0 to 14}
+#Getting count data for these genes
+
+res_SD_NE_normalized_counts_WAT <- vsd_SD_NE_D014_mat_normdata_annoDbi[rownames(WG_SD_anno),] 
+rownames(res_SD_NE_normalized_counts_WAT) <- WG_SD_anno$symbol
+res_SD_NE_normalized_counts_WAT_exactmatch <- vsd_SD_NE_D014_mat_normdata_annoDbi[which(vsd_SD_NE_D014_mat_normdata_annoDbi$symbol  %in% white_genes),]
+rownames(res_SD_NE_normalized_counts_WAT_exactmatch) <- res_SD_NE_normalized_counts_WAT_exactmatch$symbol
+#Heat map of Gene panels
+pheatmap(res_SD_NE_normalized_counts_WAT_exactmatch[,c(1:3,14:16)],
+         color = heat_colors,
+         cluster_rows =T,
+         show_rownames =T,
+         annotation = select(coldata_SD_Noextra, Day),
+         scale ="row")
+
+#Getting count data for these genes
+
+res_SD_NE_normalized_counts_BeAT <- vsd_SD_NE_D014_mat_normdata_annoDbi[rownames(BeG_SD_anno),] 
+rownames(res_SD_NE_normalized_counts_BeAT) <- BeG_SD_anno$symbol
+#subsetting for exact gene names
+res_SD_NE_normalized_counts_BeAT_exactmatch <- vsd_SD_NE_D014_mat_normdata_annoDbi[which(vsd_SD_NE_D014_mat_normdata_annoDbi$symbol %in% Beige_genes),]
+#Heat map of Gene panels
+dim(res_SD_NE_normalized_counts_BeAT) #33 17
+rownames(res_SD_NE_normalized_counts_BeAT_exactmatch) <- res_SD_NE_normalized_counts_BeAT_exactmatch$symbol
+pheatmap(res_SD_NE_normalized_counts_BeAT_exactmatch[,c(1:3,14:16)],
+         color = heat_colors,
+         cluster_rows =T,
+         cluter_colums= F,
+         show_rownames =T,
+         annotation = select(coldata_SD_Noextra, Day),
+         scale ="row")
+
+#Getting count data for these genes
+
+res_SD_NE_normalized_counts_BAT <- normalized_counts_SD_NoExtra[rownames(BrG_SD_anno),] 
+rownames(res_SD_NE_normalized_counts_BAT) <- BrG_SD_anno$symbol
+#Subsetting for Exact gene name matches
+res_SD_NE_normalized_counts_BAT_exactmatch <- vsd_SD_NE_D014_mat_normdata_annoDbi[which(vsd_SD_NE_D014_mat_normdata_annoDbi$symbol %in% Brown_genes),]
+rownames(res_SD_NE_normalized_counts_BAT_exactmatch) <- res_SD_NE_normalized_counts_BAT_exactmatch$symbol
+#Heat map of Gene panels
+
+pheatmap(res_SD_NE_normalized_counts_BAT_exactmatch[c(1:3,14:16)],
+         color = heat_colors,
+         cluster_rows =T,
+         show_rownames =T,
+         annotation = select(coldata_SD_Noextra, Time),
+         scale ="row")
+```
+
+### Day 14 only what type of Adipocytes do they look like
+```{r day 14 adipocyte substye check}
+res_SD_NE_normalized_counts_AT <- rbind(res_SD_NE_normalized_counts_WAT_exactmatch,res_SD_NE_normalized_counts_BeAT_exactmatch,res_SD_NE_normalized_counts_BAT_exactmatch)
+
+dim(res_SD_NE_normalized_counts_WAT_exactmatch) #19 17
+dim(res_SD_NE_normalized_counts_BeAT_exactmatch)#12 17
+dim(res_SD_NE_normalized_counts_BAT_exactmatch)#5 17
+annotdf_rows <- data.frame(row.names = c(res_SD_NE_normalized_counts_AT$symbol), Adipocyte_type = c(rep("White", 18), rep("Beige", 12), rep("Brown", 6)))
+
+res_SD_NE_normalized_counts_AT_d0d14 <- res_SD_NE_normalized_counts_AT[,which(substr(colnames(res_SD_NE_normalized_counts_AT),1,1)=="E" |substr(colnames(res_SD_NE_normalized_counts_AT),1,1)=="A")]
+rownames(res_SD_NE_normalized_counts_AT_d0d14) <- res_SD_NE_normalized_counts_AT$symbol
+
+pheatmap(res_SD_NE_normalized_counts_AT_d0d14,
+         color = heat_colors,
+         cluster_rows =F,
+         show_rownames =T,
+         annotation = select(coldata_SD_Noextra[c(1:3,14:16),], Time),
+         annotation_row = annotdf_rows,
+         scale ="row")
+```
+
+### diuvergent bar pot for adipogenic differentiaiton
+```{r Divergen Bar plot Adipocyte type}
+#Normalizing the data
+MSC_avg_adipogenes_SD_NE <- data.frame(A=rowMeans(res_SD_NE_normalized_counts_AT[,1:3]))
+MSC_avg_adipogenes_SD_NE <- data.frame(log2(MSC_avg_adipogenes_SD_NE))
+res_SD_NE_normalized_counts_AT_d0d14_normed <- log2(res_SD_NE_normalized_counts_AT[,1:16])-MSC_avg_adipogenes_SD_NE$A
+res_SD_NE_normalized_counts_AT_d0d14_normed
+
+#####Divergent bar graph ############
+library(matrixStats)
+#Making data frame of means 
+df_AT_SD_NE_log2_normed <- data.frame(MSC=rowMeans(res_SD_NE_normalized_counts_AT_d0d14_normed[,1:3]),Day_3_DMSO=rowMeans(res_SD_NE_normalized_counts_AT_d0d14_normed[,4:6]),Day_7_DMSO=rowMeans(res_SD_NE_normalized_counts_AT_d0d14_normed[,7:10]),Day_10_DMSO=rowMeans(res_SD_NE_normalized_counts_AT_d0d14_normed[,11:13]),Day_14_DMSO=rowMeans(res_SD_NE_normalized_counts_AT_d0d14_normed[,14:16]),row.names = rownames(res_SD_NE_normalized_counts_AT_d0d14_normed),gene = rownames(res_SD_NE_normalized_counts_AT_d0d14_normed))
+head(df_AT_SD_NE_log2_normed)
+
+# lock in factor level order
+df_AT_SD_NE_log2_normed$gene <- factor(df_AT_SD_NE_log2_normed$gene, levels = df_AT_SD_NE_log2_normed$gene)
+#inverting the order because the data keeps plotting upside down
+df_AT_SD_NE_log2_normed_reorder=df_AT_SD_NE_log2_normed[order(nrow(df_AT_SD_NE_log2_normed):1),]
+df_AT_SD_NE_log2_normed_reorder
+df_AT_SD_NE_log2_normed_reorder$gene <- factor(df_AT_SD_NE_log2_normed_reorder$gene, levels = df_AT_SD_NE_log2_normed_reorder$gene)
+library(ggplot2)
+###Colors
+library(MetBrewer)
+degascolor <- met.brewer(name = 'Morgenstern',7,type = "discrete")
+###Control Adipocytes
+color <- ifelse(df_AT_SD_NE_log2_normed_reorder$Day_14_DMSO < 0, degascolor[6], degascolor[4])
+ggplot(df_AT_SD_NE_log2_normed_reorder, aes(y = gene, x = Day_14_DMSO)) +
+  geom_bar(stat = "identity",
+           show.legend = FALSE, fill = color) + # Remove the legend +
+  xlab("log2 Relative Gene expression to MSC") +
+  ylab("Day_14_DMSO")
+```
+#Day 3 to 14 Adipogenesis changes
+```{r SD Day 3 to 14comparison}
+#BiocManager::install("DESeq2")
+suppressPackageStartupMessages(library("DESeq2"))
+
+dim(cts_mat_SD_Noextra)
+cts_mat_SD_Noextra_noMSC <- cts_mat_SD_Noextra[,4:16]
+coldata_SD_Noextra_noMSC <- coldata_SD_Noextra[4:16,]
+##Creating DDS object from the subset data                                  
+dds_SD_noMSC <- DESeqDataSetFromMatrix(countData = cts_mat_SD_Noextra_noMSC,
+                                                 colData = coldata_SD_Noextra_noMSC,
+                                                 design = ~ Time                                               )
+summary(dds_SD_noMSC)
+head(dds_SD_noMSC)   
+###Adding meta data columns
+rownames(dds_SD_noMSC) <- substr(rownames(dds_SD_noMSC),1,15)
+featureData <- data.frame(gene=substr(rownames(cts_mat_SD_Noextra_noMSC),1,15))
+mcols(dds_SD_noMSC) <- DataFrame(mcols(dds_SD_noMSC), featureData)
+mcols(dds_SD_noMSC)
+featureData$symbol <- cts_1021$SYMBOL# Adding mcol symbol data
+mcols(dds_SD_noMSC) <- DataFrame(mcols(dds_SD_noMSC), featureData)
+mcols(dds_SD_noMSC)
+###Removing low quality rows
+keep <- rowSums(counts(dds_SD_noMSC)) >= 50 #22331 genes passed this low bar
+dds_SD_noMSC <- dds_SD_noMSC[keep,]
+####Making things factors
+dds_SD_noMSC$condition <- factor(dds_SD_noMSC$condition, levels = c("control","TBT"))
+dds_SD_noMSC$condition
+dds_SD_noMSC$Time <- factor(dds_SD_noMSC$Time)
+dds_SD_noMSC$Day <- factor(dds_SD_noMSC$Day)
+# Determine the size factors to use for normalization
+dds_SD_noMSC<- estimateSizeFactors(dds_SD_noMSC)
+sizeFactors(dds_SD_noMSC)
+# Extract the normalized counts
+normalized_counts_SD_noMSC <- counts(dds_SD_noMSC, normalized=T)
+head(normalized_counts_SD_noMSC)
+
+# Transform the normalized counts 
+vsd_SD_noMSC <- vst(dds_SD_noMSC,blind=F )
+
+# Extract the matrix of transformed counts
+vsd_mat_SD_noMSC <- assay(dds_SD_noMSC)
+
+# Compute the correlation values between samples
+vsd_cor_SD_noMSC <- cor(vsd_mat_SD_noMSC) 
+
+# Plot the heatmap
+pheatmap(vsd_cor_SD_noMSC)
+colData(vsd_SD_noMSC)
+###Plot PCAs####
+plotPCA(vsd_SD_noMSC, intgroup= "condition")
+
+plotPCA(vsd_SD_noMSC, intgroup = c("Time","condition"))
+
+DES_SD_noMSC <- DESeq(dds_SD_noMSC)
+res_SD_noMSC <- results(DES_SD_noMSC)
+resultsNames(res_SD_noMSC)
+head(res_SD_noMSC)
+mcols(res_SD_noMSC)
+#Increase Alpha threshold
+res_SD_noMSC_contrast <- results(DES_SD_noMSC, contrast=c("Time","Day_14","Day_3"),alpha = 0.05)
+head(res_SD_noMSC_contrast)
+
+####DEG L2fc threshold alteration########
+# #BiocManager::install("apeglm")
+# #library(apeglm)
+# # Shrink the log2 fold change estimates to be more accurate
+# res_contr_TBT_lfc_D3 <- results(DES_SD_noMSC, 
+#                         contrast=c("condition","TBT","control"),
+#                         alpha = 0.05,
+#                         lfcThreshold = 0.2)
+# resultsNames(dds_SD_noMSC)
+# 
+# resLFC_SD_noMSC <- lfcShrink(dds_SD_noMSC,
+#                     contrast = c("condition","TBT","control"),
+#                     res = res_contr_TBT_lfc_D3)
+# summary(res_contr_TBT_lfc_D3)
+# #Save results as a dataframe
+# res_cont_SD_noMSC_lfc.2 <- data.frame(res_contr_TBT_lfc_D3)
+#res_Ordered <- res_cont_TBT[order(res_cont_TBT$pvalue),]
+#summary(res_Ordered)
+
+### Subsetting for padj and log2fc data ####
+sum(res_SD_noMSC_contrast$padj < 0.05, na.rm=TRUE) #8151 lowering the Padjusted value removed some of the genes
+res_SD_noMSC_contrast_padj_0.05 <- res_SD_noMSC_contrast[which(res_SD_noMSC_contrast$padj<0.05),]
+
+
+#All significant normalized counts table
+
+##Annnotate significant table
+suppressPackageStartupMessages(library(org.Hs.eg.db))
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+library(EnsDb.Hsapiens.v86)
+edb <- EnsDb.Hsapiens.v86
+organism(edb)
+keytypes(edb)
+keys(edb,keytype = "GENEID")
+###Annotate results table#####
+res_sig_SDnoMSC_contr_anno <- data.frame(res_SD_noMSC_contrast_padj_0.05)
+res_sig_SDnoMSC_contr_anno$symbol <- mapIds(edb,keys=rownames(res_sig_SDnoMSC_contr_anno),column="SYMBOL",keytype="GENEID",multiVals="first")
+###Write and save data###
+library(writexl)
+#writexl::write_xlsx(res_TBT_contrD3_anno,"~/Documents/Git/MSC_Bulk/RNA_seq_Data/TBT_results/TBT_noMSC_DEGs_D3_sig_anno.xlsx")
+
+```
+###D3 Visualization
+```{r D3 vs D3 visualizations of samples only results}
+# trying to run contrast on the contrasted data
+##order the table by padj value
+res_sig_order_SD_noMSC_padj_0.05 <- res_SD_noMSC_contrast_padj_0.05[order(res_SD_noMSC_contrast_padj_0.05$padj),]
+dim(res_sig_order_SD_noMSC_padj_0.05)#8151 6
+
+head(res_sig_order_SD_noMSC_padj_0.05)
+
+## Subsetting significant counts
+res_sig_SDnoMSC_contr_anno_padj_0.05 <- res_sig_SDnoMSC_contr_anno[which(res_sig_order_SD_noMSC_padj_0.05$padj<0.05),]
+res_sig_SDnoMSC_contr_anno_padj_0.05 <- res_sig_SDnoMSC_contr_anno_padj_0.05[order(res_sig_SDnoMSC_contr_anno_padj_0.05$padj),]
+###l2fc cutoff
+res_sig_SDnoMSC_contr_anno_padj_0.05_l2fc1 <- res_sig_SDnoMSC_contr_anno_padj_0.05[which(abs(res_sig_SDnoMSC_contr_anno_padj_0.05$log2FoldChange)>1),]
+res_sig_SDnoMSC_contr_anno_padj_0.05_l2fc1 <- res_sig_SDnoMSC_contr_anno_padj_0.05_l2fc1[order(res_sig_SDnoMSC_contr_anno_padj_0.05_l2fc1$padj),]
+dim(res_sig_SDnoMSC_contr_anno_padj_0.05_l2fc1)#311 7
+
+
+res_sig_SDnoMSC_contr_anno_padj_0.05_NC <- vsd_mat_SD_noMSC[rownames(res_sig_SDnoMSC_contr_anno_padj_0.05),]
+res_sig_SDnoMSC_contr_anno_padj_0.05_l2fc1_NC <- vsd_mat_SD_noMSC[rownames(res_sig_SDnoMSC_contr_anno_padj_0.05_l2fc1),]
+####Make the normalized counts from day contrast#####
+head(res_sig_SDnoMSC_contr_anno_padj_0.05)
+head(res_sig_SDnoMSC_contr_anno_padj_0.05_NC)
+
+##Heatmap####
+library(pheatmap)
+library(ComplexHeatmap)
+
+
+pheatmap(res_sig_SDnoMSC_contr_anno_padj_0.05_NC,
+         cluster_rows =T,
+         color = heat_colors,
+         cluster_cols = F,
+         show_rownames =F,
+         annotation = select(coldata_SD_Noextra, Day),
+         scale = "row")
+colnames(res_sig_normalized_counts_TBT)
+
+####Volcano#######
+##Annnotate significant table
+suppressPackageStartupMessages(library(org.Hs.eg.db))
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+library(EnsDb.Hsapiens.v86)
+edb <- EnsDb.Hsapiens.v86
+organism(edb)
+keytypes(edb)
+keys(edb,keytype = "GENEID")
+###Annotate results table#####
+res_sig_SDnoMSC_contr_anno 
+###Volcano Plot ######
+
+EnhancedVolcano(res_sig_SDnoMSC_contr_anno,
+    lab = res_sig_SDnoMSC_contr_anno$symbol,
+    x = 'log2FoldChange',
+    y = 'padj',
+    pCutoff = 10e-22,
+    FCcutoff = 1,
+    cutoffLineType = 'twodash',
+    cutoffLineWidth = 0.8,
+    pointSize = 2.0,
+    labSize = 6.0,
+    title = "results SD_NE contrast day 3-14",
+    colAlpha = 1,
+    legendLabels=c('Not sig.','Log (base 2) FC','p-value',
+      'p-value & Log (base 2) FC'),
+    legendPosition = 'right',
+    legendLabSize = 12,
+    legendIconSize = 4.0,
+    drawConnectors = F,
+    widthConnectors = 0.75,
+    max.overlaps = 50)
+###GO analysis####
+library(clusterProfiler)
+library(enrichplot)
+library(org.Hs.eg.db)
+library(ggplot2)
+# we use ggplot2 to add x axis labels (ex: ridgeplot)
+head(res_sig_SDnoMSC_contr_anno)
+SD_NE_lfc_D314 <- res_sig_SDnoMSC_contr_anno_padj_0.05$log2FoldChange
+names(SD_NE_lfc_D314) <- res_sig_SDnoMSC_contr_anno_padj_0.05$symbol
+SD_NE_lfc_D314<-na.omit(SD_NE_lfc_D314)
+# sort the list in decreasing order (required for clusterProfiler)
+SD_NE_lfc_D314 = sort(SD_NE_lfc_D314, decreasing = TRUE)
+keytypes(org.Hs.eg.db)
+head(SD_NE_lfc_D314)
+
+#gene set enrichment
+gse_SD_NE_lfc_D314 <- gseGO(geneList=SD_NE_lfc_D314, 
+             ont = "BP", 
+             keyType = "SYMBOL", 
+             minGSSize = 3, 
+             maxGSSize = 300, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = org.Hs.eg.db, 
+             pAdjustMethod = "none")
+gse_SD_NE_lfc_D314
+dotplot(gse_SD_NE_lfc_D314,showCategory=10) + ggtitle("GSEA Standard Differentiation D3-14")
+###UP regulated###
+SD_NE_lfc_D314_up <- SD_NE_lfc_D314[SD_NE_lfc_D314>0]
+length(SD_NE_lfc_D314_up)#1539 up regulated genes
+gse_SD_NE_lfc_D314_up <- gseGO(geneList=SD_NE_lfc_D314_up, 
+             ont = "BP", 
+             keyType = "SYMBOL", 
+             minGSSize = 3, 
+             maxGSSize = 300, 
+             pvalueCutoff = 0.05,
+             nPermSimple= 10000,
+             verbose = TRUE, 
+             OrgDb = org.Hs.eg.db, 
+             pAdjustMethod = "none")
+write.csv(gse_SD_NE_lfc_D314_up,"~/Documents/Git/MSC_Bulk/RNA_seq_Data/TBT_results/gse_SD_NE_lfc_D314_up.csv", quote = F)
+dotplot(gse_SD_NE_lfc_D314_up,showCategory=10) + ggtitle("GSEA Standard Differentiation D3-14 Upregulated")
+## I Didn't do the following analysis. It still says TBT because I copied it from the TBT analysis#######
+###EnrichGO
+# enrichGO_SD_NE_lfc_D314_up <- enrichGO(gene=unique(unlist(names(SD_NE_lfc_D314_up))), 
+#              ont = "BP", 
+#              keyType = "SYMBOL", 
+#              minGSSize = 3, 
+#              maxGSSize = 300, 
+#              pvalueCutoff = 0.05, 
+#              readable = TRUE, 
+#              OrgDb = org.Hs.eg.db, 
+#              pAdjustMethod = "none")
+# enrichGO_SD_NE_lfc_D314_up
+# #### Reduce clusters######
+# library(rrvgo)
+# simMatrix_SD_noMSC <- calculateSimMatrix(gse_TBT_lfc_D3@result$ID, orgdb="org.Hs.eg.db",
+#                                                                method="Rel")
+# 
+# scores_simMatrix_SD_noMSC <- setNames(-log10(gse_TBT_lfc_D3@result$qvalues), gse_TBT_lfc_D3@result$ID)
+# reducedTerms_SD_noMSC <- reduceSimMatrix(simMatrix_SD_noMSC, scores_simMatrix_SD_noMSC, threshold = 0.7, orgdb = "org.Hs.eg.db")
+# #heatmapPlot(simMatrix_SD_noMSC,reducedTerms_SD_noMSC,annotateParent = T,annotationLabel = "parentTerm",fontsize= 6) # this is super noisy
+# scatterPlot(simMatrix_SD_noMSC,reducedTerms_SD_noMSC)
+# treemapPlot(reducedTerms_SD_noMSC)
+# 
+# ### Seperating up vs down regulated genes ####
+# ####Up Regulated DEGS####
+# res_TBT_contrD3_anno_padj_0.05 <- res_TBT_contrD3_anno_padj_0.05[order(res_TBT_contrD3_anno_padj_0.05$padj),]
+# head(res_TBT_contrD3_anno_padj_0.05_NC)
+# #normalized counts upregulated
+# res_TBT_contrD3_anno_padj_0.05_NC_UP <- res_TBT_contrD3_anno_padj_0.05_NC[rownames(res_TBT_contrD3_anno_padj_0.05[which(res_TBT_contrD3_anno_padj_0.05$log2FoldChange>0),]),]
+# dim(res_TBT_contrD3_anno_padj_0.05_NC_UP) #108 7
+# top_SD_noMSC_Up <- data.frame(res_TBT_contrD3_anno_padj_0.05_NC_UP) %>% rownames_to_column(var ="ensgene")
+# dim(top_SD_noMSC_Up)
+# head(top_SD_noMSC_Up)
+# top_SD_noMSC_Up <- gather(top_SD_noMSC_Up, key ="samplename", value ="normalized_counts",2:8)
+# head(top_SD_noMSC_Up)
+# 
+# top_SD_noMSC_Up<- inner_join(top_SD_noMSC_Up,
+#                      rownames_to_column(coldata_TBT, var ="samplename"),
+#                      by ="samplename")
+# head(top_SD_noMSC_Up)
+# top_TBT_up_D3_anno <- data.frame(top_SD_noMSC_Up)
+# top_TBT_up_D3_anno$symbol<-                                                                                      mapIds(edb,keys=top_SD_noMSC_Up$ensgene,column="SYMBOL",keytype="GENEID",multiVals="first")
+# top_TBT_up_D3_anno$symbol
+# 
+# ggplot(top_TBT_up_D3_anno)+
+#   geom_point(aes(x = symbol, y = normalized_counts, color = condition))+
+#   scale_y_log10()+
+#   xlab("Genes")+
+#   ylab("Normalized Counts")+
+#   ggtitle("Top Upregulated Genes TBT vs DMSO Day 3")+
+#   theme_bw()+
+#   theme(axis.text.x = element_text(angle =45, hjust =1))+
+#   theme(plot.title = element_text(hjust =0.5))
+#         
+# ####Down regulated DEGs####
+# res_TBT_contrD3_anno_padj_0.05 <- res_TBT_contrD3_anno_padj_0.05[order(res_TBT_contrD3_anno_padj_0.05$padj),]
+# head(res_TBT_contrD3_anno_padj_0.05_NC)
+# #normalized counts upregulated
+# res_TBT_contrD3_anno_padj_0.05_NC_Down <- res_TBT_contrD3_anno_padj_0.05_NC[rownames(res_TBT_contrD3_anno_padj_0.05[which(res_TBT_contrD3_anno_padj_0.05$log2FoldChange<0),]),]
+# dim(res_TBT_contrD3_anno_padj_0.05_NC_Down) #1217 7
+# #dim(res_sig_normalized_counts_TBT_Down) #156 27  
+# 
+# top_SD_noMSC_Down <- data.frame(res_TBT_contrD3_anno_padj_0.05_NC_Down[1:50,]) %>% rownames_to_column(var ="ensgene")
+# dim(top_SD_noMSC_Down)#50 8
+# head(top_SD_noMSC_Down)
+# top_SD_noMSC_Down <- gather(top_SD_noMSC_Down, key ="samplename", value ="normalized_counts",2:8)
+# head(top_SD_noMSC_Down)
+# 
+# top_SD_noMSC_Down<- inner_join(top_SD_noMSC_Down,
+#                      rownames_to_column(coldata_TBT, var ="samplename"),
+#                      by ="samplename")
+# head(top_SD_noMSC_Down)
+# top_SD_noMSC_Down_anno <- data.frame(top_SD_noMSC_Down)
+# dim(top_SD_noMSC_Down_anno)
+# top_SD_noMSC_Down_anno$symbol<-                                                                                      mapIds(edb,keys=top_SD_noMSC_Down$ensgene,column="SYMBOL",keytype="GENEID",multiVals="first")
+# top_SD_noMSC_Down_anno$symbol
+# 
+# ggplot(top_SD_noMSC_Down_anno)+
+#   geom_point(aes(x = symbol, y = normalized_counts, color = condition))+
+#   scale_y_log10()+
+#   xlab("Genes")+
+#   ylab("Normalized Counts")+
+#   ggtitle("Top Downregulated Genes TBT vs DMSO Day 3")+
+#   theme_bw()+
+#   theme(axis.text.x = element_text(angle =45, hjust =1))+
+#   theme(plot.title = element_text(hjust =0.5))
+```
+
+##Kml Day 3-14 comparision
+I am running KML again with just days 3-14 because the majority of the vairaitions that we saw were between days 0-3 so MSC to initial adipocyte.
+```{r KML Day 3-14}
+###########Trying on my data##############
+# ## subseting data for adjusted logfold to minimize number of genes to look at. 
+head(res_sig_SDnoMSC_contr_anno_padj_0.05)#annotated results from the vsd dataset
+head(res_sig_SDnoMSC_contr_anno_padj_0.05_NC)
+str(res_sig_SD_NE_order_lfc0.5_annoDbi) #9873
+dim(res_sig_SD_NE_order_lfc0.5_annoDbi)#9873 7
+SD_NE_lfc_D314_scaled <- data.frame(scale(res_sig_SDnoMSC_contr_anno_padj_0.05_NC))
+summary(SD_NE_lfc_D314_scaled)
+
+#Given that they treat each column as a time point I will make a table with the median for each day
+BiocManager::install("miscTools")
+library(miscTools)
+res_sig_SD_NE_noMSC_NC_anno_median <- data.frame(id=rownames(SD_NE_lfc_D314_scaled),B=rowMedians(SD_NE_lfc_D314_scaled[,1:3]),C=rowMedians(SD_NE_lfc_D314_scaled[,4:7]),D=rowMedians(SD_NE_lfc_D314_scaled[,8:10]),E=rowMedians(SD_NE_lfc_D314_scaled[,11:13]),symbol=res_sig_SDnoMSC_contr_anno_padj_0.05$symbol)
+head(res_sig_SD_NE_noMSC_NC_anno_median)
+dim(res_sig_SD_NE_noMSC_NC_anno_median)
+
+str(res_sig_SD_NE_noMSC_NC_anno_median)
+
+## Examples
+
+head(res_sig_SD_NE_noMSC_NC_anno_median)
+str(res_sig_SD_NE_noMSC_NC_anno_median)# Must make the ID colummn a factor
+res_sig_SD_NE_noMSC_NC_anno_median$id <- factor(res_sig_SD_NE_noMSC_NC_anno_median$id)
+res_sig_SD_NE_noMSC_NC_anno_median$symbol <- factor(res_sig_SD_NE_noMSC_NC_anno_median$symbol)
+str(res_sig_SD_NE_noMSC_NC_anno_median)
+summary(res_sig_SD_NE_noMSC_NC_anno_median)
+which(rowSums(res_sig_SD_NE_noMSC_NC_anno_median[,2:5])>20)
+
+SD_NE_lfc_D314_scaled_nohighcount <- res_sig_SD_NE_noMSC_NC_anno_median[-which(rowSums(res_sig_SD_NE_noMSC_NC_anno_median[,2:5])>20),]
+summary(SD_NE_lfc_D314_scaled_nohighcount)
+cldSDQ_D314_SDNE_nohigh <- cld(SD_NE_lfc_D314_scaled_nohighcount, timeInData = 2:5)
+cldSDQ_D314_SDNE_nohigh
+kml(cldSDQ_D314_SDNE_nohigh, 9, parAlgo = parALGO(distance = function(x, y) cor(x, y),
+  saveFreq = 10))
+choice(cldSDQ_D314_SDNE_nohigh)
+plotAllCriterion(cldSDQ_D314_SDNE_nohigh)
+##Trying KML
+cldSDQ_D314_SDNE <- cld(res_sig_SD_NE_noMSC_NC_anno_median, timeInData = 2:5)
+cldSDQ_D314_SDNE
+#Run KML trajectory analysis
+kml(cldSDQ_D314_SDNE, 4, parAlgo = parALGO(distance = function(x, y) cor(x, y),
+  saveFreq = 10))
+
+choice(cldSDQ_D314_SDNE)
+plotAllCriterion(cldSDQ_D314_SDNE)
+
+res_sig_SD_NE_noMSC_NC_anno_median$clusters <- getClusters(cldSDQ_D314_SDNE, 5)
+summary(glm(clusters,data=res_sig_SD_NE_noMSC_NC_anno_median,family = "binomial"))
+epipageGroupAD <- epipageShort[epipageShort$clusters %in% c("A", "D"),]
+summary(glm(clusters ~ gender, data = epipageGroupAD, family = "binomial"))
+
+summary(res_sig_SD_NE_noMSC_NC_anno_median[,2:5])
+# Taking only the top 1000 genes 
+res_sig_SD_NE_noMSC_NC_anno_median_top2k <- res_sig_SD_NE_noMSC_NC_anno_median[1:2000,]
+
+
+#Creating cluster longdata object
+cldSDQ_D314_SDNE_top2k <- cld(res_sig_SD_NE_noMSC_NC_anno_median_top2k, timeInData = 2:5)
+cldSDQ_D314_SDNE_top2k
+#Run KML trajectory analysis
+kml(cldSDQ_D314_SDNE_top2k, 6, parAlgo = parALGO(distance = function(x, y) cor(x, y),
+  saveFreq = 10))
+
+choice(cldSDQ_D314_SDNE_top2k)
+plotAllCriterion(cldSDQ_D314_SDNE_top2k)
+
+res_sig_SD_NE_noMSC_NC_anno_median_top1k$clusters <- getClusters(cldSDQ_D314_SDNE_top2k, 4)
+summary(glm(clusters,data=res_sig_SD_NE_noMSC_NC_anno_median_top1k,family = "binomial"))
+epipageGroupAD <- epipageShort[epipageShort$clusters %in% c("A", "D"),]
+summary(glm(clusters ~ gender, data = epipageGroupAD, family = "binomial"))
+```
+#Monocle 3 heatmap of gene expresion over time may be interesting
+```{r Monocle}
+```
+
+
+
+
+
+##Defining MSC
+Similar to hw I looked into the Adipocyte panels,I want to look at the expression profiles for MSCs this paper [https://bmcgenomics.biomedcentral.com/articles/10.1186/1471-2164-8-70] defines what BM-derived MSCs gene expression resembles. the key genes are 
+ * XM_016240 NM_006211_1(penk), NM_001854_1(col11a1), BC010956_1
+, NM_000612_1(igf2), NM_031476_1, U52914_1, NM_006379_1(sema3c), NM_002546_1 (tnfrsf11b)
+Adipocyte derived MSC gene expression [links][https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0083363], here as :
+
+ * High density significant genes: IL1B, IL6, A2M, MDK, CXCL1, CXCL2, CXCL5, CXCL6, IL8, CXCL8, CXCL16, CCL, CCL8, WISP2, FGF9, PDGFD, VEGFA, GDF15,
+ * Low density significant genes: UBE2C, KIF20A, NCAPG, TPX2, BUB1, GINS2, RACGAP1, FOXM1, UHRF1, MCM2, RASD2, FGF5, CDC25A, CCNE2, ESM1, TOP2A, CDC45L, AURKA, PRC1, KIFC1, PTTG1, AURKB, KIF23, KIF11, KIF20B, CENPE, ASPM, TTK, MAD2L1, NUF2, CDC20, CCNA2 and CCNB2
+ 
+ 
+```{r gene expression of MSC types, dev='pdf'}
+head(res_SD_NoExtra_alph05_anno)
+head(normalized_counts_SD_NoExtra)
+#annotate the normalized counts table
+res_SD_NoExtra_D014_anno
+
+named_norm_counts_SD_NoExtra <- data.frame(normalized_counts_SD_NoExtra) %>% rownames_to_column(var ="ensgene")
+named_norm_counts_SD_NoExtra <- left_join(x = named_norm_counts_SD_NoExtra,
+             y = grch38[,c("ensgene","symbol","description")],
+             by ="ensgene")
+
+BM_MSC_genes <- c("XM_016240","NM_006211","PENK", "NM_001854_1","COL11A1", "BC010956","NM_000612","IGF2", "NM_031476_1", "U52914_1", "NM_006379_1","SEMA3C", "NM_002546_1", "TNFRSF11B")
+BM_SD <-grep(named_norm_counts_SD_NoExtra$symbol, pattern = paste(BM_MSC_genes,collapse = "|"))
+#BM_SD <-grep(res_SD_NoExtra_alph05_anno$, pattern = paste(BM_MSC_genes,collapse = "|"))
+BMMSC_SD_anno <- named_norm_counts_SD_NoExtra[BM_SD,]
+length(BMMSC_SD_anno)
+
+
+AT_MSC_genes <- c("IL1B", "IL6", "A2M", "MDK", "CXCL1", "CXCL2", "CXCL5", "CXCL6", "IL8", "CXCL8", "CXCL16", "CCL2", "CCL8", "WISP2", "FGF9", "PDGFD", "VEGFA","GDF15","UBE2C", "KIF20A", "NCAPG", "TPX2", "BUB1", "GINS2", "RACGAP1", "FOXM1", "UHRF1", "MCM2", "RASD2","FGF5", "CDC25A", "CCNE2", "ESM1", "TOP2A", "CDC45L", "AURKA", "PRC1", "KIFC1", "PTTG1", "AURKB", "KIF23", "KIF11", "KIF20B", "CENPE", "ASPM", "TTK", "MAD2L1", "NUF2", "CDC20", "CCNA2","CCNB2")
+AT_MSC_SD <-grep(named_norm_counts_SD_NoExtra$symbol, pattern = paste(AT_MSC_genes,collapse = "|"))
+#BM_SD <-grep(res_SD_NoExtra_alph05_anno$, pattern = paste(BM_MSC_genes,collapse = "|")
+#subsetting for exact gene names
+ATMSC_SD_anno <- named_norm_counts_SD_NoExtra[which(named_norm_counts_SD_NoExtra$symbol %in% AT_MSC_genes),]
+#ATMSC_SD_anno <- named_norm_counts_SD_NoExtra[AT_MSC_SD,]
+length(ATMSC_SD_anno)
+head(ATMSC_SD_anno)
+rownames(ATMSC_SD_anno) <- ATMSC_SD_anno$symbol
+ATMSC_SD_anno_mat <- ATMSC_SD_anno[,2:17]
+#Plotting MSC genes
+
+pheatmap(ATMSC_SD_anno_mat,
+         cluster_rows =T,
+         show_rownames =F,
+         annotation = select(coldata_SD_Noextra, Time),
+         fontsize = 6,
+         scale ="row")
+
+######Subsetting a nd normalizing MSC rows############
+library(MatrixGenerics)
+ATMSC_SD_anno_mat_D0 <- ATMSC_SD_anno[,2:4]
+ATMSC_SD_anno_mat_D0_scaled <- data.frame(scale(ATMSC_SD_anno_mat_D0))
+ATMSC_SD_anno_mat_D0_scaled_median <- data.frame(A=-log(rowMeans(ATMSC_SD_anno_mat_D0_scaled)),row.names = rownames(ATMSC_SD_anno_mat_D0_scaled))
+ATMSC_SD_anno_mat_D0_scaled_median
+head(ATMSC_SD_anno_mat_D0)
+pheatmap(ATMSC_SD_anno_mat_D0,
+         color = heat_colors,
+         cluster_rows =T,
+         show_rownames =F,
+         annotation = select(coldata_SD_Noextra, Time),
+         fontsize = 6,
+         scale ="row")
+```
+
+###Visualizing MSC similarities
+```{r visualizing MSC types}
+#Getting count data for these genes
+SD_WAT <-BMMSC_SD_anno
+dim(ATMSC_SD_anno)
+SD_Norm_count_MSC <- normalized_counts_SD_NoExtra[which(rownames(ATMSC_SD_anno) %in% AT_MSC_genes),] 
+rownames(SD_NE_normalized_counts_WAT) <- WG_SD_anno$symbol
+SD_NE_normalized_counts_WAT_exactmatch <- SD_NE_normalized_counts_WAT[which(rownames(SD_NE_normalized_counts_WAT) %in% white_genes),]
+#Heat map of Gene panels
+pheatmap(ATMSC_SD_anno[,2:17],
+         color = heat_colors,
+         cluster_rows =T,
+         show_rownames =T,
+         annotation = select(coldata_SD_Noextra, Time),
+         scale ="row")
+
+#Getting count data for these genes
+res_SD_BeAT <-BeG_SD_anno[order(BeG_SD_anno$padj),]
+res_SD_NE_normalized_counts_BeAT <- normalized_counts_SD_NoExtra[BeG_SD_anno$genes,] 
+rownames(res_SD_NE_normalized_counts_BeAT) <- BeG_SD_anno$symbol
+#subsetting for exact gene names
+res_SD_NE_normalized_counts_BeAT_exactmatch <- res_SD_NE_normalized_counts_BeAT[which(rownames(res_SD_NE_normalized_counts_BeAT) %in% Beige_genes),]
+#Heat map of Gene panels
+dim(res_SD_NE_normalized_counts_BeAT)
+pheatmap(res_SD_NE_normalized_counts_BeAT_exactmatch,
+         color = heat_colors,
+         cluster_rows =T,
+         show_rownames =T,
+         annotation = select(coldata_SD_Noextra, Time),
+         scale ="row")
+
+#Getting count data for these genes
+res_SD_BAT <-BrG_SD_anno[order(WG_SD_anno$padj),]
+res_SD_NE_normalized_counts_BAT <- normalized_counts_SD_NoExtra[BrG_SD_anno$genes,] 
+rownames(res_SD_NE_normalized_counts_BAT) <- BrG_SD_anno$symbol
+#Subsetting for Exact gene name matches
+res_SD_NE_normalized_counts_BAT_exactmatch <- res_SD_NE_normalized_counts_BAT[which(rownames(res_SD_NE_normalized_counts_BAT) %in% Brown_genes),]
+#Heat map of Gene panels
+
+pheatmap(res_SD_NE_normalized_counts_BAT_exactmatch,
+         color = heat_colors,
+         cluster_rows =T,
+         show_rownames =T,
+         annotation = select(coldata_SD_Noextra, Time),
+         scale ="row")
+```
+
+### Day 14 only what type of Adipocytes do they look like
+```{r day 0 MSC check}
+
+res_SD_NE_normalized_counts_AT_d0d14 <- rbind(res_SD_NE_normalized_counts_WAT_exactmatch,res_SD_NE_normalized_counts_BeAT_exactmatch,res_SD_NE_normalized_counts_BAT_exactmatch)
+
+annotdf_rows <- data.frame(row.names = c(rownames(res_SD_NE_normalized_counts_AT_d0d14)), Adipocyte_type = c(rep("White", 7), rep("Beige", 8), rep("Brown", 5)))
+
+res_SD_NE_normalized_counts_AT_d0d14 <- res_SD_NE_normalized_counts_AT[,which(substr(colnames(res_SD_NE_normalized_counts_AT),1,1)=="E" |substr(colnames(res_SD_NE_normalized_counts_AT),1,1)=="A")]
+
+
+pheatmap(res_SD_NE_normalized_counts_AT_d0d14,
+         cluster_rows =F,
+         color = heat_colors,
+         show_rownames =T,
+         scale = "row",
+         annotation = select(coldata_SD_Noextra, Day),
+         annotation_row = annotdf_rows)
+``` 
+
+
+
+##GO Analysis Day 0 d14 Comparison
+```{r GO setup}
+library(clusterProfiler)
+library(enrichplot)
+library(org.Hs.eg.db)
+library(ggplot2)
+# we use ggplot2 to add x axis labels (ex: ridgeplot)
+library(ggplot2)
+head(res_TC)
+
+SD_lfc <- res_SD_NoExtra_alph05_anno$log2FoldChange
+names(SD_lfc) <- res_SD_NoExtra_alph05_anno$symbol
+SD_lfc<-na.omit(SD_lfc)
+# sort the list in decreasing order (required for clusterProfiler)
+SD_lfc = sort(SD_lfc, decreasing = TRUE)
+keytypes(org.Hs.eg.db)
+head(SD_lfc)
+#gene set enrichment
+gse_SD_NE_D014 <- gseGO(geneList=SD_lfc, 
+             ont ="ALL", 
+             keyType = "SYMBOL", 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = org.Hs.eg.db, 
+             pAdjustMethod = "none")
+gse_SD_NE_D014 
+
+#Count gne number
+gene_count<- gse_SD_NE_D014@result %>% group_by(ID) %>% summarise(count = sum(str_count(core_enrichment, "/")) + 1)
+## merge with the original dataframe
+gse_dot_df<- left_join(gse_SD_NE_D014@result, gene_count, by = "ID") %>% mutate(GeneRatio = count/setSize)
+head(gse_dot_df)
+
+genes_per_category <- gse_SD_NE_D014@result %>% group_by(ID) %>% summarise(genes = str_count(core_enrichment, "/"))
+genes_per_category
+
+#Plot GSEGO top 20
+dotplot(gse_SD_NE_D014,showCategory=30) + ggtitle("Dotplot for GSEA")
+#Subsetting for lipid associated geens
+GO_fat <- grep(pattern = "fat",gse_SD_NE_D014@result$Description)
+GO_lipid <- grep(pattern = "lipid",gse_SD_NE_D014@result$Description)
+
+##Plot GSE analysis results 
+gse_SD_NE_D014_Lipid <- as.data.frame(gse_dot_df[c(GO_fat,GO_lipid),])
+gse_SD_NE_D014_Lipid <- gse_SD_NE_D014_Lipid[order(gse_SD_NE_D014_Lipid$NES),]
+head(gse_SD_NE_D014_Lipid)
+gse_SD_NE_D014_Lipid$type = "upregulated"
+gse_SD_NE_D014_Lipid$type[gse_SD_NE_D014_Lipid$NES<0]="downregulated"
+gse_SD_NE_D014_Lipid$type
+p <- ggplot(gse_SD_NE_D014_Lipid,
+       aes(x=GeneRatio, y=Description))+
+  geom_point(aes(size=GeneRatio,color = p.adjust))+
+  theme_bw(base_size = 14)+
+  scale_colour_gradient(limits= c(0,0.10),low="red")+
+  ylab(NULL)+
+  ggtitle("Lipid Associated GSEA")
+p+ facet_grid(.~type)
+
+##The dotplot function doens't work with a dataframe so I found a ggplot code
+#dotplot(gse_SD_NE_D014_Lipid,showCategory=10) + ggtitle("Lipid Associated GSEA")
+```
+## Go analysis for Transcription factors
+```{r GO for TFs}
+#Subsetting for TFs and plotting only those genes
+#Subset for Transcription factor associated terms
+GO_TF <- grep(pattern = "transcript",gse_SD_NE_D014[]$Description)
+GSE_SD_NE_TF <- gse_SD_NE_D014[GO_TF,]
+GSE_SD_NE_TF$core_enrichment
+
+```
+```{r GO analysis}
+p1 <- heatplot(gse_SD_NE_D014,)
+p1
+```
+
+```{r Go plots}
+require(DOSE)
+dotplot(gse_SD_NE_D014, showCategory=10, split=".sign") + facet_grid(.~.sign)
+```
+
+
+```{r GO string plot, eval = FALSE}
+goplot(gse)
+```
+
+```{r KEGG, eval= FALSE}
+
+kegg_organism = "hsa"
+kk2 <- gseKEGG(geneList     = kegg_gene_list,
+               organism     = kegg_organism,
+               nPerm        = 10000,
+               minGSSize    = 3,
+               maxGSSize    = 800,
+               pvalueCutoff = 0.05,
+               pAdjustMethod = "none",
+               keyType       = "ncbi-geneid")
+```
+
+
+
+
